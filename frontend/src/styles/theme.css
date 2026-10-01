@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-base text-ink antialiased select-none;
+    font-feature-settings: 'tnum';
+  }
+  /* 滚动条 */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-line rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-faint;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface rounded-card shadow-card;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-btn px-4 h-9 text-sm font-medium
+      transition-all duration-150 outline-none
+      focus-visible:ring-2 focus-visible:ring-accent/60
+      disabled:opacity-40 disabled:cursor-not-allowed
+      active:scale-[0.98];
+  }
+  .btn-primary {
+    @apply btn text-white bg-gradient-to-br from-accent to-accent-bright
+      hover:shadow-glow hover:brightness-110;
+  }
+  .btn-ghost {
+    @apply btn bg-transparent text-ink-soft border border-line
+      hover:bg-surface-raised hover:text-ink hover:border-ink-faint;
+  }
+  .btn-danger {
+    @apply btn text-white bg-bad/90 hover:bg-bad;
+  }
+  .field {
+    @apply w-full h-9 rounded-field bg-base border border-line px-3 text-sm text-ink
+      placeholder:text-ink-faint outline-none transition-colors
+      focus:border-accent/70 focus:shadow-glow;
+  }
+  .label {
+    @apply block text-xs font-medium text-ink-soft mb-1.5;
+  }
+  .seg {
+    @apply inline-flex items-center gap-1 p-1 rounded-panel bg-base border border-line;
+  }
+  .seg-item {
+    @apply px-3 h-8 rounded-lg text-sm text-ink-soft cursor-pointer transition-all
+      hover:text-ink;
+  }
+  .seg-item-on {
+    @apply text-white bg-gradient-to-br from-accent to-accent-bright shadow-glow;
+  }
+}
+
+/* 进度条流动动画：即使百分比不变，斜纹持续流动，让用户看出程序仍在工作 */
+.progress-animated {
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.28) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.28) 50%,
+    rgba(255, 255, 255, 0.28) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 1rem 1rem;
+  animation: progress-flow 1s linear infinite;
+}
+
+@keyframes progress-flow {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 1rem 0;
+  }
+}
+
+/* 拖拽投放区：Wails 按 CSS 属性判断"哪里可以接收拖入的文件"。
+   注意：v2.15 运行时实际读取 --wails-ln（官方文档注释的 --wails-drop-target 已过时），
+   这里同时设置两个，保证任何版本都能识别；只有带该类的区域拖拽才触发，实现"页面级"拖拽 */
+.drop-zone {
+  --wails-ln: drop;
+  --wails-drop-target: drop;
+}

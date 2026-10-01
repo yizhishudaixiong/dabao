@@ -1,0 +1,16 @@
+# 日志文件
+*.log
+
+# 后端编译产物（build.ps1 输出的安装包）
+build/bin/
+
+# 前端依赖与编译产物
+frontend/node_modules/
+frontend/dist/
+
+# UPX 压缩工具（第三方二进制）
+internal/builder/upx/
+
+# 系统文件
+.DS_Store
+Thumbs.db
