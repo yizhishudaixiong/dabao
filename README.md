@@ -21,7 +21,8 @@
 <img width="1060" height="707" alt="image" src="https://github.com/user-attachments/assets/56435bed-4580-4768-a5c9-7f392c67486d" />
 <img width="1063" height="707" alt="image" src="https://github.com/user-attachments/assets/90184989-d7ea-417f-983c-92c06084a79c" />
 <img width="1059" height="704" alt="image" src="https://github.com/user-attachments/assets/85331921-0850-47e7-be27-560f7c30f291" />
-<img width="1065" height="704" alt="image" src="https://github.com/user-attachments/assets/ab757b85-d14b-4d05-ab98-992f98df24f6" />
+<img width="1065" height="704" alt="image" src="https://github.com/user-attachments/assets/59fa3f34-68e3-4eeb-95ed-741f4d3b3e1d" />
+
 
 ## 下载安装
 
