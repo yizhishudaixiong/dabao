@@ -87,8 +87,8 @@ pypacker/
 - 临时工作区位于 `%TEMP%\PythonPackTool\job_<时间戳>`，清理前做路径白名单校验（`isWithin`），只删自己创建的目录
 - 依赖分析：PyInstaller 官方 `Analysis` 引擎收集环境真实模块（含本地模块发现），AST 提取入口脚本的 import 候选，差集判定缺失；「已装判定」采用三层匹配（纯模块名 / 目录前缀 / 文件名）+ `importlib.util.find_spec` 权威兜底，与 PyInstaller 命名规则解耦，避免 .pyd 类扩展模块误报；缺失项按所选镜像源（官方/清华/阿里/自定义）安装到目标环境；分析缓存按入口脚本哈希分目录，保留最近 10 个项目自动清理
 <img width="1058" height="714" alt="image" src="https://github.com/user-attachments/assets/dd1ecf20-14cd-4205-bd96-22b8cbc1ab08" />
-<img width="1058" height="714" alt="image" src="https://github.com/user-attachments/assets/62f584d5-6e1a-43d9-8202-44546ba10363" />
+<img width="1063" height="711" alt="image" src="https://github.com/user-attachments/assets/86ba248e-61ad-4030-bfd6-4513e7d93e88" />
 <img width="1060" height="707" alt="image" src="https://github.com/user-attachments/assets/56435bed-4580-4768-a5c9-7f392c67486d" />
 <img width="1063" height="707" alt="image" src="https://github.com/user-attachments/assets/90184989-d7ea-417f-983c-92c06084a79c" />
 <img width="1059" height="704" alt="image" src="https://github.com/user-attachments/assets/85331921-0850-47e7-be27-560f7c30f291" />
-<img width="1067" height="711" alt="image" src="https://github.com/user-attachments/assets/4ecc7796-94b3-42ed-938a-e03541cd3351" />
+<img width="1065" height="704" alt="image" src="https://github.com/user-attachments/assets/ab757b85-d14b-4d05-ab98-992f98df24f8" />
