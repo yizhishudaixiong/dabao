@@ -379,7 +379,7 @@ func scanDriveC() []string {
 			}
 			return nil
 		}
-		if strings.EqualFold(d.Name(), pythonExeName()) {
+		if strings.EqualFold(d.Name(), pythonExeName()) && !isFakePython(path) {
 			out = append(out, path)
 		}
 		return nil
