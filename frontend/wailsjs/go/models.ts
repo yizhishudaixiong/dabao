@@ -33,6 +33,7 @@ export namespace config {
 	    excludeModules: string[];
 	    encryptMode: string;
 	    pythonPath: string;
+	    pipMirror: string;
 	    extraArgs: string[];
 	    cacheAccel: boolean;
 	    uacAdmin: boolean;
@@ -59,6 +60,7 @@ export namespace config {
 	        this.excludeModules = source["excludeModules"];
 	        this.encryptMode = source["encryptMode"];
 	        this.pythonPath = source["pythonPath"];
+	        this.pipMirror = source["pipMirror"];
 	        this.extraArgs = source["extraArgs"];
 	        this.cacheAccel = source["cacheAccel"];
 	        this.uacAdmin = source["uacAdmin"];
