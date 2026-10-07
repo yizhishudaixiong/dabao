@@ -312,22 +312,21 @@ func scanCommonDirs() []string {
 }
 
 // skipDriveDirs 全盘扫描时跳过的无关/超大目录名（大小写不敏感）：
-// Windows 系统目录、已单独扫描的安装目录、各类缓存与依赖目录，
-// 避免每次搜索都要遍历 C 盘海量文件导致卡顿。
+// Windows 系统目录、回收站、各类依赖与缓存目录。
+// 注意：Program Files / Program Files (x86) / AppData 不在此列——
+// 这些位置也可能装有 Python（软件自带、conda、非标准安装等），
+// 遍历深度由外层 4 层限制控制，不会过度深入。
 var skipDriveDirs = map[string]bool{
-	"windows":                true,
-	"program files":          true,
-	"program files (x86)":    true,
-	"appdata":                true,
-	"$recycle.bin":           true,
+	"windows":                   true,
+	"$recycle.bin":              true,
 	"system volume information": true,
-	"recovery":               true,
-	"node_modules":           true,
-	"site-packages":          true,
-	".git":                   true,
-	"__pycache__":            true,
-	"build":                  true,
-	"dist":                   true,
+	"recovery":                  true,
+	"node_modules":              true,
+	"site-packages":             true,
+	".git":                      true,
+	"__pycache__":               true,
+	"build":                     true,
+	"dist":                      true,
 }
 
 // scanDriveC 全盘扫描 C 盘：兜底收集任意位置的物理 Python（python.exe）
@@ -351,10 +350,16 @@ func scanDriveC() []string {
 		}
 		if d.IsDir() {
 			if path != root {
-				// 深度限制：相对 C:\ 最多深入 4 层，避免遍历过深过慢
+				// 深度限制：相对 C:\ 默认最多深入 4 层，避免遍历过深过慢。
+				// Program Files / Program Files (x86) / AppData 不受此限——
+				// 用户目录本身就有 2~3 层，若同样限 4 层则 AppData 里几乎扫不到
+				// （Python 常被软件/conda 装进这些位置），遍历成本由跳过列表兜底
 				rel, _ := filepath.Rel(root, path)
 				if strings.Count(rel, string(filepath.Separator)) >= 4 {
-					return filepath.SkipDir
+					lower := strings.ToLower(path)
+					if !strings.HasPrefix(lower, "c:\\program files") && !strings.Contains(lower, "\\appdata\\") {
+						return filepath.SkipDir
+					}
 				}
 				// 虚拟环境优先识别（.venv 等点开头目录也走这里），识别后不再深入
 				if fileExists(filepath.Join(path, "pyvenv.cfg")) {
