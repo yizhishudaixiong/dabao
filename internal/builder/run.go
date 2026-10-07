@@ -38,7 +38,7 @@ func (w *Workspace) Run(cfg *config.BuildConfig, onLog func(string), cancel <-ch
 	encProjRoot := ""
 
 	if cfg.EncryptMode == "basic" || cfg.EncryptMode == "deep" {
-		encEntry, runtimes, encRoot, err := w.encryptProject(cfg, onLog)
+		encEntry, runtimes, encRoot, err := w.encryptProject(cfg, onLog, cancel)
 		if err != nil {
 			return err
 		}

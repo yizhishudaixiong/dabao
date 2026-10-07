@@ -52,6 +52,10 @@ type BuildConfig struct {
 	// 环境
 	PythonPath string `json:"pythonPath"` // 用户选择的 python.exe
 
+	// pip 下载源（空=官方源；如 https://pypi.tuna.tsinghua.edu.cn/simple）。
+	// 由「依赖检查」页同步，自动补装 PyInstaller / PyArmor 时复用，避免打包途中再问用户
+	PipMirror string `json:"pipMirror"`
+
 	// 附加 PyInstaller 参数
 	ExtraArgs []string `json:"extraArgs"`
 

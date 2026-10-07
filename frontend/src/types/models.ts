@@ -56,6 +56,8 @@ export interface BuildConfig {
   useUPX: boolean
   excludeModules: string[]
   pythonPath: string
+  // pip 下载源（空=官方源），自动补装 PyInstaller / PyArmor 时复用
+  pipMirror: string
   extraArgs: string[]
   cacheAccel: boolean
   uacAdmin: boolean

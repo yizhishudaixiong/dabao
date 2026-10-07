@@ -31,7 +31,7 @@ import (
 // 处理策略（方案A）：
 //   - 逐文件加密，超限文件自动跳过并以明文打包（界面/日志明确警告）
 //   - 入口脚本超限则直接报错停止（入口不加密则加密无意义）
-func (w *Workspace) encryptProject(cfg *config.BuildConfig, onLog func(string)) (string, []string, string, error) {
+func (w *Workspace) encryptProject(cfg *config.BuildConfig, onLog func(string), cancel <-chan struct{}) (string, []string, string, error) {
 	if cfg.EntryScript == "" {
 		return "", nil, "", fmt.Errorf("请先选择 Python 入口脚本")
 	}
@@ -39,14 +39,26 @@ func (w *Workspace) encryptProject(cfg *config.BuildConfig, onLog func(string)) 
 		return "", nil, "", fmt.Errorf("请先选择 Python 环境")
 	}
 
-	// 1. 定位所选 Python 环境中的 pyarmor 可执行文件（PyArmor 8+ 为独立 CLI）
+	// 1. 定位所选 Python 环境中的 pyarmor 可执行文件（PyArmor 8+ 为独立 CLI）。
+	//    未安装时自动补装（与第一页"需要时自动安装"的提示一致），装完再继续；
+	//    自动安装失败时返回带中文诊断的错误，并引导到真正的安装入口「依赖检查」页
 	pyarmorExe := deps.FindPyarmor(cfg.PythonPath)
 	if pyarmorExe == "" {
-		return "", nil, "", fmt.Errorf("所选 Python 环境未安装 PyArmor，请回到「选择环境」页一键安装")
+		if onLog != nil {
+			onLog("[加密] 所选环境未安装 PyArmor，正在自动安装（约需几十秒）…")
+		}
+		if err := deps.Install(cfg.PythonPath, []string{"pyarmor"}, cfg.PipMirror, func(line string) {
+			if onLog != nil {
+				onLog(line)
+			}
+		}, nil, cancel); err != nil {
+			return "", nil, "", fmt.Errorf("自动安装 PyArmor 失败：请到「依赖检查」页手动安装，或切换下载源（阿里/清华）后重试\n%s", err)
+		}
+		pyarmorExe = deps.FindPyarmor(cfg.PythonPath)
 	}
 	ok, ver := deps.CheckPyarmor(cfg.PythonPath)
 	if !ok {
-		return "", nil, "", fmt.Errorf("所选 Python 环境未安装 PyArmor，请回到「选择环境」页一键安装")
+		return "", nil, "", fmt.Errorf("PyArmor 自动安装未生效：请到「依赖检查」页勾选安装 PyArmor 后重试，或重新选择已安装 PyArmor 的 Python 环境")
 	}
 	if onLog != nil {
 		onLog("[加密] 检测到 PyArmor: " + ver)

@@ -55,6 +55,7 @@ function defaultCfg(): BuildConfig {
     useUPX: false,
     excludeModules: [],
     pythonPath: '',
+    pipMirror: '',
     extraArgs: [],
     cacheAccel: true,
     uacAdmin: false,

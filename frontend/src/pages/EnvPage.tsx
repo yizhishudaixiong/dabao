@@ -675,7 +675,7 @@ export default function EnvPage({
             <p className="truncate text-sm text-ink-faint">路径：{selected.path}</p>
             {(!selected.hasPyInstaller || !selected.hasPyarmor) && (
               <span className="shrink-0 text-xs text-ink-faint">
-                PyInstaller 和 PyArmor 会在需要的时候自动安装，无需担心
+                PyInstaller / PyArmor 未安装时会在分析、打包过程中自动补装，无需手动操作
               </span>
             )}
           </div>

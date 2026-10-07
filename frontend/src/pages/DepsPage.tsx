@@ -72,6 +72,12 @@ export default function DepsPage({
   const effectiveMirror =
     mirror === '__custom__' ? customMirror.trim() : MIRROR_URLS[mirror] ?? ''
 
+  // 切换下载源：同步进打包配置，加密打包自动补装 PyArmor 时复用同一源，避免打包途中换源
+  const changeMirror = (v: string) => {
+    setMirror(v)
+    updateCfg({ pipMirror: v === '__custom__' ? customMirror.trim() : MIRROR_URLS[v] ?? '' })
+  }
+
   // 安装期间：每秒走一次计时
   useEffect(() => {
     if (!installing) {
@@ -240,7 +246,7 @@ export default function DepsPage({
           <span className="text-sm text-ink">下载源</span>
           <Seg
             value={mirror}
-            onChange={setMirror}
+            onChange={changeMirror}
             options={MIRROR_OPTIONS.map((m) => ({ value: m.value, label: m.label }))}
           />
         </div>
@@ -250,7 +256,10 @@ export default function DepsPage({
               className="field"
               placeholder="输入完整的 pip 镜像地址，如 https://pypi.tuna.tsinghua.edu.cn/simple"
               value={customMirror}
-              onChange={(e) => setCustomMirror(e.target.value)}
+              onChange={(e) => {
+                setCustomMirror(e.target.value)
+                updateCfg({ pipMirror: e.target.value.trim() })
+              }}
             />
             <p className="mt-2 text-xs leading-relaxed text-ink-faint">
               <span className="font-medium text-ink">使用说明：</span>
