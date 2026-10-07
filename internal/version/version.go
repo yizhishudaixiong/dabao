@@ -4,4 +4,4 @@ package version
 
 // Version 程序内部版本号。
 // 修改版本号只需改这一处，然后运行 build.ps1 重新构建即可。
-const Version = "5.0.0"
+const Version = "6.0.0"
