@@ -313,9 +313,8 @@ func scanCommonDirs() []string {
 
 // skipDriveDirs 全盘扫描时跳过的无关/超大目录名（大小写不敏感）：
 // Windows 系统目录、回收站、各类依赖与缓存目录。
-// 注意：Program Files / Program Files (x86) / AppData 不在此列——
-// 这些位置也可能装有 Python（软件自带、conda、非标准安装等），
-// 遍历深度由外层 4 层限制控制，不会过度深入。
+// Program Files / AppData 不在此列（里面也可能装 Python），
+// 遍历深度统一由 driveMaxDepth 限制控制。
 var skipDriveDirs = map[string]bool{
 	"windows":                   true,
 	"$recycle.bin":              true,
@@ -329,11 +328,18 @@ var skipDriveDirs = map[string]bool{
 	"dist":                      true,
 }
 
+// driveMaxDepth C 盘全盘扫描的最大深度（相对 C:\ 的分隔符层数，与虚拟环境扫描同一算法）。
+// 6 层足够覆盖 Program Files / AppData 下的常见安装（如
+// Users\名\AppData\Local\Programs\Python\Python3xx 这种标准位置已被常规路径扫描覆盖，
+// 这里负责兜底 conda、软件自带等非标准位置），
+// 同时避免深入豆包沙箱运行时（约 9 层）等深层嵌套目录拖慢扫描。
+const driveMaxDepth = 6
+
 // scanDriveC 全盘扫描 C 盘：兜底收集任意位置的物理 Python（python.exe）
 // 与虚拟环境（目录含 pyvenv.cfg，自动取 Scripts/bin 下的 python.exe）。
-// 最多深入 4 层（与虚拟环境扫描一致），并跳过系统与缓存大目录
-// （skipDriveDirs）以及点开头的隐藏缓存目录（.cache/.gradle 等；
-// 真正的虚拟环境 .venv 含 pyvenv.cfg，会先被识别并记录）。
+// 相对 C:\ 最多深入 driveMaxDepth 层（含 Program Files / AppData 等位置），
+// 并跳过系统与缓存大目录（skipDriveDirs）以及点开头的隐藏缓存目录
+// （.cache/.gradle 等；真正的虚拟环境 .venv 含 pyvenv.cfg，会先被识别并记录）。
 // 非 Windows 平台返回空。虚拟环境的 IsVirtual 标记由后续 Detect 自动补全。
 func scanDriveC() []string {
 	var out []string
@@ -350,16 +356,10 @@ func scanDriveC() []string {
 		}
 		if d.IsDir() {
 			if path != root {
-				// 深度限制：相对 C:\ 默认最多深入 4 层，避免遍历过深过慢。
-				// Program Files / Program Files (x86) / AppData 不受此限——
-				// 用户目录本身就有 2~3 层，若同样限 4 层则 AppData 里几乎扫不到
-				// （Python 常被软件/conda 装进这些位置），遍历成本由跳过列表兜底
+				// 深度限制：相对 C:\ 最多深入 driveMaxDepth 层
 				rel, _ := filepath.Rel(root, path)
-				if strings.Count(rel, string(filepath.Separator)) >= 4 {
-					lower := strings.ToLower(path)
-					if !strings.HasPrefix(lower, "c:\\program files") && !strings.Contains(lower, "\\appdata\\") {
-						return filepath.SkipDir
-					}
+				if strings.Count(rel, string(filepath.Separator)) >= driveMaxDepth {
+					return filepath.SkipDir
 				}
 				// 虚拟环境优先识别（.venv 等点开头目录也走这里），识别后不再深入
 				if fileExists(filepath.Join(path, "pyvenv.cfg")) {
