@@ -78,6 +78,11 @@ func Search(customRoot string) ([]config.PythonEnv, error) {
 		if err != nil {
 			abs = p
 		}
+		// 过滤豆包自带沙箱运行时（Doubao\User Data\sandbox_runtime 下的内部 Python），
+		// 它可能经 PATH 进入候选，但不应作为用户可选环境
+		if strings.Contains(strings.ToLower(abs), "sandbox_runtime") {
+			return
+		}
 		if seen[abs] {
 			return
 		}
