@@ -104,6 +104,11 @@ func Search(customRoot string) ([]config.PythonEnv, error) {
 		add(p, false, "")
 	}
 
+	// 3.5 整个 C 盘兜底扫描（最多 4 层，跳过系统/缓存大目录；装在任何位置的 Python 也能被发现）
+	for _, p := range scanDriveC() {
+		add(p, false, "")
+	}
+
 	// 4. 自定义根目录下的虚拟环境
 	if customRoot != "" {
 		if vs := scanVirtualEnvs(customRoot); len(vs) > 0 {
@@ -303,6 +308,77 @@ func scanCommonDirs() []string {
 			}
 		}
 	}
+	return out
+}
+
+// skipDriveDirs 全盘扫描时跳过的无关/超大目录名（大小写不敏感）：
+// Windows 系统目录、已单独扫描的安装目录、各类缓存与依赖目录，
+// 避免每次搜索都要遍历 C 盘海量文件导致卡顿。
+var skipDriveDirs = map[string]bool{
+	"windows":                true,
+	"program files":          true,
+	"program files (x86)":    true,
+	"appdata":                true,
+	"$recycle.bin":           true,
+	"system volume information": true,
+	"recovery":               true,
+	"node_modules":           true,
+	"site-packages":          true,
+	".git":                   true,
+	"__pycache__":            true,
+	"build":                  true,
+	"dist":                   true,
+}
+
+// scanDriveC 全盘扫描 C 盘：兜底收集任意位置的物理 Python（python.exe）
+// 与虚拟环境（目录含 pyvenv.cfg，自动取 Scripts/bin 下的 python.exe）。
+// 最多深入 4 层（与虚拟环境扫描一致），并跳过系统与缓存大目录
+// （skipDriveDirs）以及点开头的隐藏缓存目录（.cache/.gradle 等；
+// 真正的虚拟环境 .venv 含 pyvenv.cfg，会先被识别并记录）。
+// 非 Windows 平台返回空。虚拟环境的 IsVirtual 标记由后续 Detect 自动补全。
+func scanDriveC() []string {
+	var out []string
+	if runtime.GOOS != "windows" {
+		return out
+	}
+	root := "C:\\"
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return out
+	}
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // 无权限/被占用的目录直接跳过
+		}
+		if d.IsDir() {
+			if path != root {
+				// 深度限制：相对 C:\ 最多深入 4 层，避免遍历过深过慢
+				rel, _ := filepath.Rel(root, path)
+				if strings.Count(rel, string(filepath.Separator)) >= 4 {
+					return filepath.SkipDir
+				}
+				// 虚拟环境优先识别（.venv 等点开头目录也走这里），识别后不再深入
+				if fileExists(filepath.Join(path, "pyvenv.cfg")) {
+					py := filepath.Join(path, "Scripts", pythonExeName())
+					if !fileExists(py) {
+						py = filepath.Join(path, "bin", pythonExeName())
+					}
+					if fileExists(py) {
+						out = append(out, py)
+					}
+					return filepath.SkipDir
+				}
+				name := strings.ToLower(d.Name())
+				if strings.HasPrefix(name, ".") || skipDriveDirs[name] {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if strings.EqualFold(d.Name(), pythonExeName()) {
+			out = append(out, path)
+		}
+		return nil
+	})
 	return out
 }
 
