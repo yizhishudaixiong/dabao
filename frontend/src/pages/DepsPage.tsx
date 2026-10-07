@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { Badge, Button, Card, Seg } from '../components/ui'
 import LogPanel from '../components/LogPanel'
 import type { BuildConfig, DepInfo, DepsResult } from '../types/models'
@@ -44,7 +44,7 @@ export default function DepsPage({
   depsLogs: string[]
   depsProgress: { percent: number; stage: string } | null
   analysisLogs: string[]
-  setAnalysisLogs: (l: string[]) => void
+  setAnalysisLogs: Dispatch<SetStateAction<string[]>>
   installing: boolean
   setInstalling: (v: boolean) => void
   analyzing: boolean
@@ -96,7 +96,11 @@ export default function DepsPage({
         setMsg(needPyarmor ? 'PyArmor 已就绪，全部依赖均满足' : '全部依赖均已满足（未选择代码加密，不涉及 PyArmor）')
       }
     } catch (e) {
-      setMsg('分析失败: ' + String(e))
+      // 分析失败：把完整错误（含中文诊断 + 最近输出原文）追加进日志面板，
+      // 同时展示在提示文字中；面板在失败后保留，用户能看到背后的真实原因
+      const msgText = '分析失败: ' + String(e)
+      setMsg(msgText)
+      setAnalysisLogs((l) => [...l, msgText])
     } finally {
       setAnalyzing(false)
     }
@@ -200,21 +204,31 @@ export default function DepsPage({
             </span>
           )}
         </div>
-        {/* 分析引擎实时日志：分析中展示进度与原理说明 */}
-        {analyzing && (
+        {/* 分析引擎实时日志：分析中展示进度与原理说明；失败后保留面板，展示完整诊断与原始报错 */}
+        {(analyzing || analysisLogs.length > 0) && (
           <div className="mt-3 rounded-panel border border-line bg-base p-3">
-            <div className="flex items-center gap-2 text-sm text-ink">
-              <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-line border-t-accent" />
-              正在执行 PyInstaller 官方分析引擎…
-            </div>
-            <p className="mt-2 text-xs leading-relaxed text-ink-faint">
-              原理：分析引擎会编译并扫描你的代码字节码、递归展开整棵依赖树、执行各包官方钩子，
-              所以比传统源码扫描更全（能发现动态导入的依赖）。前几秒为固定开销（引擎自身加载），与项目大小无关。
-            </p>
+            {analyzing ? (
+              <>
+                <div className="flex items-center gap-2 text-sm text-ink">
+                  <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-line border-t-accent" />
+                  正在执行 PyInstaller 官方分析引擎…
+                </div>
+                <p className="mt-2 text-xs leading-relaxed text-ink-faint">
+                  原理：分析引擎会编译并扫描你的代码字节码、递归展开整棵依赖树、执行各包官方钩子，
+                  所以比传统源码扫描更全（能发现动态导入的依赖）。前几秒为固定开销（引擎自身加载），与项目大小无关。
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-ink">最近分析日志（含失败原因与原始报错）</p>
+            )}
             {analysisLogs.length > 0 && (
-              <div className="mt-2 max-h-24 overflow-auto rounded-field bg-surface-raised p-2 font-mono text-[11px] leading-relaxed text-ink-soft">
-                {analysisLogs.slice(-8).map((l, i) => (
-                  <div key={i} className="truncate">
+              <div
+                className={`mt-2 overflow-auto rounded-field bg-surface-raised p-2 font-mono text-[11px] leading-relaxed text-ink-soft ${
+                  analyzing ? 'max-h-24' : 'max-h-48'
+                }`}
+              >
+                {analysisLogs.slice(-(analyzing ? 8 : 40)).map((l, i) => (
+                  <div key={i} className={analyzing ? 'truncate' : 'whitespace-pre-wrap break-all'}>
                     {l}
                   </div>
                 ))}
@@ -253,7 +267,7 @@ export default function DepsPage({
             你已选择代码加密，分析时将自动检查 PyArmor 的安装状态。
           </p>
         )}
-        {msg && <p className="mt-3 text-xs text-ink-soft">{msg}</p>}
+        {msg && <p className="mt-3 whitespace-pre-wrap break-all text-xs leading-relaxed text-ink-soft">{msg}</p>}
       </Card>
 
       {deps && (

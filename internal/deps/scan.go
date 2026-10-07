@@ -536,10 +536,12 @@ func Analyze(entryScript, pythonPath string, onProgress func(string)) (*config.D
 		return nil, fmt.Errorf("启动依赖分析失败: %v", err)
 	}
 
-	// 逐行读取 stdout/stderr：JSON 行是最终结果，其余行是分析引擎日志（转发给界面做进度）
+	// 逐行读取 stdout/stderr：JSON 行是最终结果，其余行是分析引擎日志（转发给界面做进度）；
+	// stderr 全文同时累积，供失败时拼装中文诊断（分析脚本崩溃的 traceback 一定在 stderr）
 	var jsonLine string
+	var errOut strings.Builder
 	var mu sync.Mutex
-	readPipe := func(rc io.ReadCloser) {
+	readPipe := func(rc io.ReadCloser, isErr bool) {
 		sc := bufio.NewScanner(rc)
 		sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for sc.Scan() {
@@ -547,19 +549,24 @@ func Analyze(entryScript, pythonPath string, onProgress func(string)) (*config.D
 			if line == "" {
 				continue
 			}
-			if strings.HasPrefix(line, "{") {
+			if !isErr && strings.HasPrefix(line, "{") {
 				mu.Lock()
 				jsonLine = line
 				mu.Unlock()
 				continue
+			}
+			if isErr {
+				mu.Lock()
+				errOut.WriteString(line + "\n")
+				mu.Unlock()
 			}
 			if onProgress != nil {
 				onProgress(line)
 			}
 		}
 	}
-	go readPipe(stdout)
-	go readPipe(stderr)
+	go readPipe(stdout, false)
+	go readPipe(stderr, true)
 
 	err = cmd.Wait()
 	if err != nil {
@@ -567,7 +574,8 @@ func Analyze(entryScript, pythonPath string, onProgress func(string)) (*config.D
 		final := jsonLine
 		mu.Unlock()
 		if final == "" {
-			return nil, fmt.Errorf("依赖分析失败: %v", err)
+			// 分析脚本崩溃且无结果：用中文诊断（原因+建议+最近输出原文）替代干巴巴的退出码
+			return nil, fmt.Errorf("依赖分析失败: %v\n%s", err, BuildAnalyzeDiagnosis(errOut.String()))
 		}
 		// 有 JSON 输出但进程退出码非 0（如 PyInstaller 缓存写警告），仍尝试解析
 		var res config.DepsResult
@@ -582,7 +590,7 @@ func Analyze(entryScript, pythonPath string, onProgress func(string)) (*config.D
 	final := jsonLine
 	mu.Unlock()
 	if final == "" {
-		return nil, fmt.Errorf("依赖分析未产生结果")
+		return nil, fmt.Errorf("依赖分析未产生结果\n%s", BuildAnalyzeDiagnosis(errOut.String()))
 	}
 	var res config.DepsResult
 	if e := json.Unmarshal([]byte(final), &res); e != nil {

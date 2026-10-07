@@ -1,10 +1,15 @@
 package deps
 
 import (
+	"regexp"
 	"strings"
 
 	"pypacker/internal/errhint"
 )
+
+// scriptNotFoundRegex 匹配 PyInstaller 的入口脚本不存在报错（捕获组 1 为具体路径）：
+// ERROR: script 'D:\proj\main.py' not found
+var scriptNotFoundRegex = regexp.MustCompile(`(?i)script\s+'([^']+)'\s+not found`)
 
 // pipRules 依赖安装失败规则表：按优先级从上到下匹配，命中即返回对应中文原因+建议。
 // 关键词均会先转小写再匹配 —— 越具体、越常见的错误越靠前。
@@ -103,4 +108,93 @@ func ExplainPipError(out string) errhint.Hint {
 func BuildPipDiagnosis(out string) string {
 	h := ExplainPipError(out)
 	return errhint.BuildDiagnosis("依赖安装诊断", h, out, 10)
+}
+
+// analyzeRules 依赖分析（PyInstaller 官方分析引擎）失败规则表：
+// 按优先级从上到下匹配，命中即返回对应中文原因+建议。
+// 关键词均会先转小写再匹配 —— 越具体、越常见的错误越靠前。
+var analyzeRules = []errhint.Rule{
+	// 1. 入口脚本不存在 / 路径错误（最常见；PyInstaller 与 Python 两级报错都覆盖）
+	{Regex: scriptNotFoundRegex,
+		Reason: "找不到入口脚本文件：{1}（路径不存在，或文件已被移动/删除）",
+		Advice: "请回到「程序信息」页重新选择入口脚本；确认脚本文件没有被删除或改名，路径中没有多余字符。"},
+	{Keywords: []string{"filenotfounderror", "no such file or directory", "[errno 2]"},
+		Reason: "找不到入口脚本文件（路径不存在，或文件已被移动/删除）",
+		Advice: "请回到「程序信息」页重新选择入口脚本；确认脚本文件没有被删除或改名，路径中没有多余字符。"},
+
+	// 2. 入口脚本是文件夹 / 无读取权限
+	{Keywords: []string{"is a directory", "permission denied"},
+		Reason: "入口脚本是文件夹或没有读取权限",
+		Advice: "请回到「程序信息」页选择正确的 .py 脚本文件（不要选文件夹），并确认文件未被其他程序占用。"},
+
+	// 3. 所选环境未安装 PyInstaller（分析引擎本身缺失）
+	{Keywords: []string{"no module named pyinstaller"},
+		Reason: "所选 Python 环境未安装 PyInstaller（分析引擎依赖它）",
+		Advice: "分析前本工具会自动补装 PyInstaller；这里仍报错说明自动安装未成功，请到「依赖检查」页手动安装 PyInstaller，或切换下载源（阿里源/清华源）后重试。"},
+
+	// 4. Python 环境不完整（缺核心库）
+	{Keywords: []string{"python library not found", "libpython"},
+		Reason: "所选 Python 环境不完整（缺少 Python 核心库文件）",
+		Advice: "该环境无法用于依赖分析，请在「选择环境」页重新选择完整安装的 Python，或新建虚拟环境后重试。"},
+
+	// 5. Python 环境损坏（缺失基础模块）
+	{Keywords: []string{"no module named 'encodings'", "no module named encodings"},
+		Reason: "所选 Python 环境已损坏（缺失基础模块 encodings）",
+		Advice: "该环境无法正常使用，请在「选择环境」页重新选择，或新建虚拟环境后重试。"},
+
+	// 6. PyInstaller 与 Python 版本不兼容
+	{Keywords: []string{"your system is not supported", "pyinstaller requires at least", "unsupported python", "not a valid pyinstaller"},
+		Reason: "PyInstaller 与当前 Python 版本不兼容",
+		Advice: "请在「依赖检查」页把 PyInstaller 升级/重装到最新版后重试；或改用官方推荐的 Python 3.10~3.12 环境。"},
+
+	// 7. 源码语法错误
+	{Keywords: []string{"syntaxerror", "indentationerror"},
+		Reason: "入口脚本或项目代码存在语法错误",
+		Advice: "请先在本地用 Python 运行一遍你的程序，修复报错后再点击分析。"},
+
+	// 8. 源码编码不是 UTF-8
+	{Keywords: []string{"unicodedecodeerror", "codec can't", "gbk codec", "utf-8 codec"},
+		Reason: "源码文件编码不是 UTF-8，分析引擎无法解析",
+		Advice: "请用编辑器把 .py 源码另存为 UTF-8 编码后再试。"},
+
+	// 9. 分析引擎处理某个依赖库时出错（库缺失 / 损坏 / 钩子失败）
+	{Keywords: []string{"hook failed", "failed to execute script", "importerror", "attributeerror", "typeerror"},
+		Reason: "分析引擎处理某个依赖库时出错（该库缺失或已损坏）",
+		Advice: "请查看下方「最近输出」确认是哪个库报错，到「依赖检查」页安装或强制重装该库后重试；若勾选了「精简打包」，请先关闭再试。"},
+
+	// 10. 递归深度超限（大项目常见）
+	{Keywords: []string{"recursionerror", "maximum recursion depth exceeded"},
+		Reason: "分析时 Python 递归深度超限（代码或依赖嵌套过深）",
+		Advice: "可在入口脚本最上方加入以下两行后重试：\nimport sys; sys.setrecursionlimit(10000)"},
+
+	// 11. 内存不足
+	{Keywords: []string{"memoryerror", "out of memory"},
+		Reason: "分析时内存不足",
+		Advice: "请关闭其他占用内存的程序后重试；大项目建议改用「多文件」模式打包。"},
+
+	// 12. 磁盘空间不足
+	{Keywords: []string{"no space left", "insufficient disk", "disk full"},
+		Reason: "磁盘空间不足（分析引擎需要临时空间）",
+		Advice: "请清理磁盘空间后重试。"},
+
+	// 13. 权限不足 / 被杀毒软件拦截
+	{Keywords: []string{"permissionerror", "access is denied", "winerror 5", "winerror 32"},
+		Reason: "分析过程没有写入权限，或文件被占用/被杀毒软件拦截",
+		Advice: "请关闭正在运行的目标程序；将本工具、项目目录加入杀毒软件白名单后重试。"},
+}
+
+// ExplainAnalyzeError 分析依赖分析引擎的完整输出，识别失败原因，
+// 返回中文原因 + 针对性建议（识别不了时给出通用兜底）。
+func ExplainAnalyzeError(out string) errhint.Hint {
+	return errhint.Match(strings.ToLower(out), analyzeRules, errhint.Hint{
+		Reason: "依赖分析失败（未能自动识别具体原因）",
+		Advice: "请查看下方「最近输出」中最后几行排查；也可截图发给作者协助定位。",
+	})
+}
+
+// BuildAnalyzeDiagnosis 拼装完整中文诊断文本（作为分析失败的最终错误消息返回，
+// 含中文原因 + 建议 + 分析引擎最近输出原文）。
+func BuildAnalyzeDiagnosis(out string) string {
+	h := ExplainAnalyzeError(out)
+	return errhint.BuildDiagnosis("依赖分析诊断", h, out, 10)
 }

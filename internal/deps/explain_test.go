@@ -53,3 +53,49 @@ func TestBuildPipDiagnosis(t *testing.T) {
 		t.Error("最近输出应只含最后10行")
 	}
 }
+
+func TestExplainAnalyzeError(t *testing.T) {
+	cases := []struct {
+		name   string
+		out    string
+		expect string
+	}{
+		{"入口脚本不存在", "Traceback ... FileNotFoundError: [Errno 2] No such file or directory: 'C:\\proj\\main.py'", "找不到入口脚本"},
+		{"入口脚本不存在(引擎格式)", "ERROR: script 'D:\\proj\\main.py' not found", "找不到入口脚本"},
+		{"入口是目录", "IsADirectoryError: [Errno 21] Is a directory: 'C:\\proj\\main.py'", "文件夹"},
+		{"PyInstaller未装", "python.exe: No module named PyInstaller", "未安装 PyInstaller"},
+		{"环境不完整", "OSError: Python library not found: libpython3.12.so", "核心库"},
+		{"环境损坏", "ModuleNotFoundError: No module named 'encodings'", "损坏"},
+		{"版本不兼容", "Your system is not supported. PyInstaller requires at least Python 3.8", "不兼容"},
+		{"语法错误", "SyntaxError: invalid syntax (main.py, line 10)", "语法错误"},
+		{"编码问题", "UnicodeDecodeError: 'gbk' codec can't decode byte 0xc4 in position 2", "UTF-8"},
+		{"依赖库处理失败", "Hook 'PIL.Image' failed: ImportError: No module named 'PIL'", "依赖库"},
+		{"递归超限", "RecursionError: maximum recursion depth exceeded", "递归"},
+		{"内存不足", "MemoryError: Unable to allocate 512 MiB", "内存不足"},
+		{"磁盘不足", "OSError: [Errno 28] No space left on device", "磁盘空间不足"},
+		{"权限不足", "PermissionError: [WinError 5] Access is denied", "没有写入权限"},
+		{"未知错误", "some weird error 42", "未能自动识别"},
+	}
+	for _, c := range cases {
+		h := ExplainAnalyzeError(c.out)
+		if !strings.Contains(h.Reason, c.expect) {
+			t.Errorf("[%s] 原因不匹配: got %q, want contains %q", c.name, h.Reason, c.expect)
+		}
+		if h.Advice == "" {
+			t.Errorf("[%s] 建议为空", c.name)
+		}
+	}
+}
+
+func TestBuildAnalyzeDiagnosis(t *testing.T) {
+	d := BuildAnalyzeDiagnosis("line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12")
+	if !strings.Contains(d, "依赖分析诊断") {
+		t.Error("缺少诊断标题")
+	}
+	if !strings.Contains(d, "line12") {
+		t.Error("应包含最后一行")
+	}
+	if strings.Contains(d, "line1\n") {
+		t.Error("最近输出应只含最后10行")
+	}
+}
