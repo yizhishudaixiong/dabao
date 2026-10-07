@@ -1,8 +1,11 @@
 // 全局常量：所有外部网址统一在这里维护，避免散落各处
 // 产品名 / 作者 / 版本号由后端 internal/version 提供（界面右上角显示）
 
-// 发布工具的帖子地址（关于弹窗中"访问发布工具的帖子"按钮打开）
+// 发布工具的帖子地址（关于弹窗中"更新帖子"按钮打开）
 export const APP_POST_URL = 'https://www.52pojie.cn/thread-2125094-1-1.html'
+
+// 开源项目地址（关于弹窗中"开源项目"按钮打开）
+export const APP_REPO_URL = 'https://github.com/yizhishudaixiong/dabao'
 
 // Python 官网下载页面（引导用户下载 Python 时使用）
 export const PY_DOWNLOAD_URL = 'https://www.python.org/downloads/windows/'

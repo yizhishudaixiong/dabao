@@ -3,7 +3,7 @@ import StepNav, { STEPS } from './components/StepNav'
 import { Button, Modal, Toggle } from './components/ui'
 import { BrowserOpenURL, OnFileDrop, OnFileDropOff, Quit } from '../wailsjs/runtime/runtime'
 import icon from './assets/icon.png'
-import { APP_POST_URL } from './constants'
+import { APP_POST_URL, APP_REPO_URL } from './constants'
 import { baseName, dirOf } from './lib/path'
 import EnvPage from './pages/EnvPage'
 import ConfigPage from './pages/ConfigPage'
@@ -530,9 +530,14 @@ export default function App() {
               <Button variant="ghost" onClick={() => setShowAbout(false)}>
                 关闭
               </Button>
-              <Button variant="primary" onClick={() => BrowserOpenURL(APP_POST_URL)}>
-                访问发布工具的帖子
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => BrowserOpenURL(APP_REPO_URL)}>
+                  开源项目
+                </Button>
+                <Button variant="primary" onClick={() => BrowserOpenURL(APP_POST_URL)}>
+                  更新帖子
+                </Button>
+              </div>
             </div>
         </Modal>
       )}
