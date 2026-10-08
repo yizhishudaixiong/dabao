@@ -187,6 +187,10 @@ export default function App() {
       return false
     }
   })
+  // 启动时记忆是否已还原完成：
+  // 还原完成前不触发"资源重新扫描"和"防抖自动保存"，避免空配置覆盖记忆文件、
+  // 以及把用户删除过的资源重新勾选回来（重开即"全勾"的根源）
+  const restoredRef = useRef(false)
 
   // 切换记忆功能：开启立刻保存当前配置，关闭立刻删除记忆文件
   const toggleMemory = (v: boolean) => {
@@ -268,7 +272,11 @@ export default function App() {
 
   // 启动时载入上次自动记忆的配置（仅记忆功能开启时；含环境路径），并尝试自动选中对应环境
   useEffect(() => {
-    if (!memoryEnabled) return
+    if (!memoryEnabled) {
+      // 未开启记忆：无配置可还原，直接视为"还原完成"，入口变化即可正常扫描资源
+      restoredRef.current = true
+      return
+    }
     let alive = true
     window.go.main.App.LoadAutoConfig()
       .then((c) => {
@@ -302,14 +310,19 @@ export default function App() {
         }
       })
       .catch(() => {})
+      .finally(() => {
+        // 还原完成（成功或失败都算）：此后用户再改入口脚本才触发资源重新扫描
+        if (alive) restoredRef.current = true
+      })
     return () => {
       alive = false
     }
   }, [])
 
   // 配置变化后自动保存到数据目录（仅记忆功能开启时，防抖 600ms，下次打开自动还原）
+  // 启动还原完成前不保存：避免初始空配置在还原完成前写入、覆盖记忆文件
   useEffect(() => {
-    if (!memoryEnabled) return
+    if (!memoryEnabled || !restoredRef.current) return
     const t = window.setTimeout(() => {
       window.go.main.App.SaveAutoConfig(cfg).catch(() => {})
     }, 600)
@@ -371,8 +384,9 @@ export default function App() {
   // 入口脚本变化时扫描其目录下的资源。
   // 注意：放在 App 层（而非 ModePage），组件切页不会重新扫描，避免覆盖用户对资源的勾选；
   // 扫描采用"合并"方式：已有路径保留用户的勾选状态，新增路径默认启用，手动添加的文件夹也保留。
+  // 启动还原完成前不扫描：重开时直接还原记忆的资源清单与勾选，不把删过的资源重新勾回来。
   useEffect(() => {
-    if (!cfg.entryScript) return
+    if (!cfg.entryScript || !restoredRef.current) return
     let alive = true
     window.go.main.App.ScanResources(dirOf(cfg.entryScript)).then((items) => {
       // 防御：后端异常/空结果可能返回 null，直接忽略，避免 for-of 崩溃
