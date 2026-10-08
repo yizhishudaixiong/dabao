@@ -162,8 +162,15 @@ func findSameName(rootDir, name string) string {
 			return nil
 		}
 		if d.IsDir() {
-			if path != rootDir && skipScanDirs[d.Name()] {
-				return filepath.SkipDir
+			if path != rootDir {
+				if skipScanDirs[d.Name()] {
+					return filepath.SkipDir
+				}
+				// Python 3.3+ 虚拟环境根目录必有 pyvenv.cfg（venv_py / venv312 等
+				// 任意命名），按标志文件识别，避免在第三方库里误找同名资源
+				if _, err := os.Stat(filepath.Join(path, "pyvenv.cfg")); err == nil {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
@@ -178,7 +185,7 @@ func findSameName(rootDir, name string) string {
 
 // 分析时跳过的目录（缓存 / 虚拟环境 / 构建产物等）
 var skipScanDirs = map[string]bool{
-	"__pycache__": true, ".venv": true, "venv": true, "env": true,
+	"__pycache__": true, ".venv": true, "venv": true, "venv_py": true, "env": true,
 	"build": true, "dist": true, ".git": true, "node_modules": true,
 	".idea": true, ".vscode": true, ".pytest_cache": true,
 }

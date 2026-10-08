@@ -24,9 +24,18 @@ except Exception:
 
 # 分析时跳过的目录（缓存 / 虚拟环境 / 构建产物）
 SKIP_DIRS = {
-    '__pycache__', '.venv', 'venv', 'env', 'build', 'dist', '.git',
+    '__pycache__', '.venv', 'venv', 'venv_py', 'env', 'build', 'dist', '.git',
     'node_modules', '.idea', '.vscode', '.pytest_cache',
 }
+
+
+def _is_venv(dirpath):
+    """Python 3.3+ 创建的虚拟环境根目录必有 pyvenv.cfg 标志文件。
+
+    用文件识别比枚举目录名更可靠：venv_py / venv312 / _venv / myenv 等
+    任意命名都能跳过，不会再把第三方库内部代码当成程序资源依赖。
+    """
+    return os.path.isfile(os.path.join(dirpath, 'pyvenv.cfg'))
 
 # 读取类调用：第一个参数是"被读取的文件"（open 内置 / cv2.imread / np.load /
 # torch.load / pd.read_csv / Image.open / shutil.copy 等）
@@ -174,7 +183,8 @@ def main():
     root = sys.argv[1]
     results = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        dirnames[:] = [d for d in dirnames
+                       if d not in SKIP_DIRS and not _is_venv(os.path.join(dirpath, d))]
         for fn in filenames:
             if fn.lower().endswith('.py'):
                 results.extend(scan_file(os.path.join(dirpath, fn), root))
