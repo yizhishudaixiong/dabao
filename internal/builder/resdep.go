@@ -142,6 +142,11 @@ func AnalyzeResourceDeps(pythonPath, entryScript string, resources []config.Reso
 		seen[key] = true
 		deps = append(deps, d)
 	}
+	// 空结果返回空切片而非 nil：nil 经 Wails 序列化成 JSON null，
+	// 前端直接读 list.length 会崩溃（Cannot read properties of null）
+	if deps == nil {
+		deps = []config.ResourceDep{}
+	}
 	return deps, nil
 }
 

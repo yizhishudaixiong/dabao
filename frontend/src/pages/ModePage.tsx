@@ -116,9 +116,11 @@ export default function ModePage({
         cfg.entryScript,
         cfg.resources,
       )
-      setResDeps(list)
+      // 防御：后端异常/空结果可能返回 null，统一转成空数组，避免读 length 崩溃
+      const items = Array.isArray(list) ? list : []
+      setResDeps(items)
       setShowResDeps(true)
-      if (list.length === 0) setResDepsMsg('未发现代码引用的资源路径（或已全部包含）')
+      if (items.length === 0) setResDepsMsg('未发现代码引用的资源路径（或已全部包含）')
     } catch (e) {
       setResDepsMsg('分析失败：' + String(e))
       setShowResDeps(true)

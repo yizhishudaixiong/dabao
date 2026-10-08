@@ -86,11 +86,11 @@ type PortablePython struct {
 
 // List 列出所有已下载的便携版
 func List() []PortablePython {
+	out := []PortablePython{}
 	entries, err := os.ReadDir(RootDir())
 	if err != nil {
-		return nil
+		return out
 	}
-	var out []PortablePython
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue

@@ -375,7 +375,8 @@ export default function App() {
     if (!cfg.entryScript) return
     let alive = true
     window.go.main.App.ScanResources(dirOf(cfg.entryScript)).then((items) => {
-      if (!alive) return
+      // 防御：后端异常/空结果可能返回 null，直接忽略，避免 for-of 崩溃
+      if (!alive || !Array.isArray(items)) return
       setCfg((c) => {
         const merged = [...c.resources]
         for (const it of items) {
