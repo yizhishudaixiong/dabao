@@ -214,12 +214,20 @@ def main(entry, workpath):
     for name, path, tc in a.binaries:
         collected[name] = ('bin', path)
 
+    def is_site_packages(path):
+        # 第三方库统一装在 site-packages（Windows/macOS）或 dist-packages（Linux）下，
+        # 路径命中即视为第三方库文件，不是用户自己的本地模块
+        p = str(path).replace('\\', '/').lower()
+        return '/site-packages/' in p or '/dist-packages/' in p
+
     def is_local_mod(mod):
         info = collected.get(mod)
         if not info:
             return False
         path = info[1] or ''
         if not path:
+            return False
+        if is_site_packages(path):
             return False
         return os.path.normpath(path).lower().startswith(os.path.normpath(base_dir).lower())
 
@@ -240,6 +248,10 @@ def main(entry, workpath):
             continue
         path = info[1] or ''
         if not path or not path.endswith('.py'):
+            continue
+        # 只扫描用户自己的本地文件；site-packages 里的第三方库文件即使
+        # 落在项目目录内（如 venv 就建在项目里），其内部 import 也不算依赖
+        if is_site_packages(path):
             continue
         if os.path.normpath(path).lower().startswith(os.path.normpath(base_dir).lower()):
             local_files.add(os.path.normpath(path))
@@ -270,7 +282,9 @@ def main(entry, workpath):
             if isinstance(node, ast.Import):
                 for a in node.names:
                     record(a.name, node.lineno)
-            elif isinstance(node, ast.ImportFrom) and node.module:
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                # level>0 是相对导入（from . import x / from .m import y），
+                # 那是包内部模块之间的互相引用，不是需要单独 pip 安装的依赖
                 record(node.module, node.lineno)
             elif isinstance(node, ast.Call):
                 # 动态导入启发式：importlib.import_module("x") / __import__("x")
