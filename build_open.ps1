@@ -8,6 +8,46 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# ---------- 0. 确保 Node.js / npm 可用 ----------
+# 机器未安装 Node.js 时，从国内镜像（npmmirror）下载内置便携版到
+# %LOCALAPPDATA%\dabao\runtime\node（与工具内置便携版 Python 同一目录策略），
+# 首次下载一次约 30MB，之后直接复用；不影响系统、不写注册表
+$nodeRuntime = Join-Path $env:LOCALAPPDATA 'dabao\runtime\node'
+function Test-NpmAvailable {
+    $n = Get-Command npm -ErrorAction SilentlyContinue
+    if ($n) { return $true }
+    foreach ($c in @('C:\Program Files\nodejs\npm.cmd', "$env:LOCALAPPDATA\Programs\nodejs\npm.cmd", "$env:APPDATA\npm\npm.cmd")) {
+        if (Test-Path $c) { return $true }
+    }
+    if (Test-Path (Join-Path $nodeRuntime 'npm.cmd')) { return $true }
+    return $false
+}
+if (-not (Test-NpmAvailable)) {
+    Write-Host '未检测到系统 Node.js，正在准备内置便携版 Node（首次下载约 30MB）...'
+    $zip = Join-Path $env:TEMP 'dabao_node.zip'
+    $url = 'https://npmmirror.com/mirrors/node/v20.19.0/node-v20.19.0-win-x64.zip'
+    curl.exe -L -o $zip $url
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $zip)) {
+        Write-Host '[错误] 便携 Node 下载失败，请手动安装 Node.js 20+ 后重试' -ForegroundColor Red
+        exit 1
+    }
+    New-Item -ItemType Directory -Force -Path $nodeRuntime | Out-Null
+    Expand-Archive -Path $zip -DestinationPath $nodeRuntime -Force
+    # 解压产生一层版本目录（node-v20.19.0-win-x64），把内容上移一层
+    $inner = Get-ChildItem $nodeRuntime -Directory | Select-Object -First 1
+    if ($inner) {
+        Get-ChildItem $inner.FullName | Move-Item -Destination $nodeRuntime -Force
+        Remove-Item $inner.FullName -Recurse -Force
+    }
+    Remove-Item $zip -Force -ErrorAction SilentlyContinue
+}
+if (Test-Path (Join-Path $nodeRuntime 'npm.cmd')) {
+    $env:PATH = $nodeRuntime + ';' + $env:PATH
+} elseif (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    Write-Host '[错误] 无法准备 Node.js，请手动安装 Node.js 20+ 后重试' -ForegroundColor Red
+    exit 1
+}
+
 # ---------- 1. 读取内部版本号 ----------
 $verFile = Join-Path $root 'internal\version\version.go'
 $match = Select-String -Path $verFile -Pattern 'Version\s*=\s*"([^"]+)"'
