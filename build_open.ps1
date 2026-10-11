@@ -76,13 +76,10 @@ Write-Host "已同步 info.json 版本 -> $ver4"
 
 # ---------- 3. 编译（不加混淆） ----------
 Push-Location $root
-# wails 可能向 stderr 打印提示，PowerShell 5.1 在 $ErrorActionPreference='Stop'
-# 下会把 stderr 当错误终止脚本，因此临时改为 Continue 并合并 2>&1 正常显示
-$oldEA = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-wails build -trimpath -ldflags "-s -w" 2>&1 | Out-Host
+# 用 cmd /c 包裹并在 cmd 层合并 2>&1，避免 PowerShell 5.1 把 wails 的 stderr
+# 提示包装成红色 ErrorRecord 显示
+cmd /c "wails build -trimpath -ldflags `"-s -w`" 2>&1"
 $ok = $LASTEXITCODE -eq 0
-$ErrorActionPreference = $oldEA
 Pop-Location
 
 if ($ok) {

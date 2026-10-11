@@ -83,13 +83,11 @@ if (-not (Get-Command garble -ErrorAction SilentlyContinue)) {
 
 # ---------- 3. 编译 ----------
 Push-Location $root
-# 说明：garble 会向 stderr 打印 seed 提示，PowerShell 5.1 在 $ErrorActionPreference='Stop'
-# 下会把 stderr 当错误终止脚本，因此这里临时改为 Continue 并合并 2>&1 正常显示
-$oldEA = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-wails build -trimpath -ldflags "-s -w" -obfuscated -garbleargs "-tiny -seed=random" 2>&1 | Out-Host
+# 说明：garble/wails 会向 stderr 打印 seed 等普通提示，PowerShell 5.1 会把
+# stderr 内容包装成 ErrorRecord 用红色显示（看着像报错，其实不是）。
+# 用 cmd /c 包裹并在 cmd 层合并 2>&1，PowerShell 只收到普通文本，不再出现红色提示
+cmd /c "wails build -trimpath -ldflags `"-s -w`" -obfuscated -garbleargs `"-tiny -seed=random`" 2>&1"
 $ok = $LASTEXITCODE -eq 0
-$ErrorActionPreference = $oldEA
 Pop-Location
 
 if ($ok) {
