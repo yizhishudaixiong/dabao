@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"pypacker/internal/cmdutil"
 	"pypacker/internal/config"
 	"pypacker/internal/deps"
 )
@@ -143,6 +144,13 @@ func BuildArgs(cfg *config.BuildConfig, workspace, entryScript string, extraData
 		args = append(args, cfg.ExtraArgs...)
 	}
 
+	// 把当前 Python 环境里已安装的所有发行版元数据（dist-info）复制进打包产物。
+	// 原因：部分第三方包（streamlit、altair 等）导入时会通过 importlib.metadata
+	// 查询自己的版本/依赖信息，PyInstaller 默认不收集 dist-info，打包后运行会报
+	// PackageNotFoundError。与其逐个枚举"哪些包需要"，不如全部复制
+	// （每个 dist-info 仅几十 KB 文本），任何包需要元数据都能查到，不会漏。
+	args = appendCopyMetadataArgs(cfg, args)
+
 	// 项目目录加入模块搜索路径，并把本地 .py 模块 / 子包作为 --hidden-import 打入，
 	// 解决 PyInstaller 对非 ASCII 模块名（如 "配置.py"）的 import 无法自动收集的缺陷，
 	// 否则打包后运行会报 "No module named '配置'"。
@@ -226,6 +234,40 @@ func BuildArgs(cfg *config.BuildConfig, workspace, entryScript string, extraData
 	args = append(args, absEntry)
 
 	return args, nil
+}
+
+// appendCopyMetadataArgs 把 Python 环境里所有已安装发行版的元数据（dist-info）
+// 逐个以 --copy-metadata 形式追加到 PyInstaller 参数里。
+// 环境未就绪或查询失败时静默跳过（不阻塞打包），已存在的同名参数不重复追加。
+func appendCopyMetadataArgs(cfg *config.BuildConfig, args []string) []string {
+	if cfg.PythonPath == "" {
+		return args
+	}
+	// 遍历 importlib.metadata 的全部发行版，输出各自的标准发行版名
+	code := "import importlib.metadata as m\n" +
+		"for d in m.distributions():\n" +
+		"    n = d.metadata.get('Name') or ''\n" +
+		"    if n:\n" +
+		"        print(n)\n"
+	out, err := cmdutil.Command(cfg.PythonPath, "-c", code).Output()
+	if err != nil {
+		return args
+	}
+	// 已有 --copy-metadata 的目标（如用户在附加参数里手动填过）不重复加
+	existing := map[string]bool{}
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--copy-metadata" {
+			existing[args[i+1]] = true
+			i++
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		p := strings.TrimSpace(line)
+		if p != "" && !existing[p] {
+			args = append(args, "--copy-metadata", p)
+		}
+	}
+	return args
 }
 
 // collectModulesIn 收集指定目录（加密产物目录或原项目目录）下的所有本地 .py 模块名和子包名，
