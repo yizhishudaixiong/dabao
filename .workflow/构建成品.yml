@@ -24,7 +24,7 @@ stages:
             export GOSUMDB=off
             export npm_config_registry=https://registry.npmmirror.com
             echo "== 安装新版 Go =="
-            curl -fsSL -o /tmp/go.tgz https://mirrors.aliyun.com/golang/go1.25.14.linux-amd64.tar.gz
+            curl -fsSL -o /tmp/go.tgz https://mirrors.aliyun.com/golang/go1.27.2.linux-amd64.tar.gz
             rm -rf /usr/local/go
             tar -C /usr/local -xzf /tmp/go.tgz
             export GOROOT=/usr/local/go
