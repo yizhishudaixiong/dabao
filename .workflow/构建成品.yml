@@ -50,13 +50,13 @@ stages:
             echo "版本: $VERSION"
             TAG="v$VERSION"
             git tag "$TAG" 2>/dev/null || echo "tag 已存在，继续"
-            git push "https://yizhishudaixiong:${GITEE_TOKEN}@gitee.com/yizhishudaixiong/dabao.git" "$TAG" 2>&1 || echo "tag 推送失败，继续尝试 Release"
-            RESP=$(curl -s -X POST "https://gitee.com/api/v5/repos/yizhishudaixiong/dabao/releases" -d "access_token=${GITEE_TOKEN}&tag_name=${TAG}&name=${TAG}&body=自动发布 ${TAG}")
+            git push "https://yizhishudaixiong:${RELEASE_TOKEN}@gitee.com/yizhishudaixiong/dabao.git" "$TAG" 2>&1 || echo "tag 推送失败，继续尝试 Release"
+            RESP=$(curl -s -X POST "https://gitee.com/api/v5/repos/yizhishudaixiong/dabao/releases" -d "access_token=${RELEASE_TOKEN}&tag_name=${TAG}&name=${TAG}&body=自动发布 ${TAG}")
             echo "创建 Release 响应: $RESP"
             RID=$(echo "$RESP" | grep -oP '"id":\s*\K[0-9]+' | head -1)
             echo "Release id: $RID"
             if [ -n "$RID" ]; then
-              curl -s -X POST "https://gitee.com/api/v5/repos/yizhishudaixiong/dabao/releases/${RID}/attach_files?access_token=${GITEE_TOKEN}" -F "file=@build/bin/Python打包工具.exe"
+              curl -s -X POST "https://gitee.com/api/v5/repos/yizhishudaixiong/dabao/releases/${RID}/attach_files?access_token=${RELEASE_TOKEN}" -F "file=@build/bin/Python打包工具.exe"
             else
               echo "Release 创建失败，跳过附件上传"
             fi
