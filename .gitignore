@@ -1,16 +1,32 @@
-# 日志文件
+# ===== 日志与调试文件 =====
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# 后端编译产物（build.ps1 输出的安装包）
+# ===== 构建产物 =====
 build/bin/
-
-# 前端依赖与编译产物
-frontend/node_modules/
 frontend/dist/
+*.syso
 
-# UPX 压缩工具（第三方二进制）
+# ===== Wails 自动生成的依赖检查缓存（package.json.md5） =====
+*.md5
+
+# ===== 前端依赖与构建缓存 =====
+frontend/node_modules/
+frontend/.vite/
+*.local
+
+# ===== 第三方二进制（UPX 等） =====
 internal/builder/upx/
 
-# 系统文件
+# ===== 环境变量 / 密钥（防止误提交） =====
+.env
+.env.*
+!.env.example
+
+# ===== IDE / 系统文件 =====
+.idea/
+.vscode/
 .DS_Store
 Thumbs.db
