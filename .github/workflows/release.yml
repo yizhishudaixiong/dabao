@@ -1,0 +1,44 @@
+# GitHub Actions：检测到 v* 版本 Tag 时，自动编译混淆版 Windows exe 并发布到 Releases
+# 触发来源：码云「仓库镜像」把本地 push 的代码和 Gitee Go 自动打的 Tag 同步到本仓库
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go 1.27.2
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装 wails 2.15.0 与 garble
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+          go install mvdan.cc/garble@v0.18.0
+          export PATH="$PATH:$(go env GOPATH)/bin"
+
+      - name: 构建 Windows 混淆版 exe
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          wails build -platform windows/amd64 -obfuscated -garbleargs "-tiny -seed=random"
+          ls -la build/bin
+
+      - name: 创建 Release 并上传 exe
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/bin/Python打包工具.exe
+          name: ${{ github.ref_name }}
+          body: 自动发布 ${{ github.ref_name }}
