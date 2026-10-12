@@ -37,9 +37,14 @@ jobs:
           wails build -platform windows/amd64 -obfuscated -garbleargs "-tiny -seed=random"
           ls -la build/bin
 
+      - name: 获取版本号
+        id: version
+        run: echo "version=v$(grep -oP 'Version\s*=\s*\"\K[^"]+' internal/version/version.go)" >> "$GITHUB_OUTPUT"
+
       - name: 创建 Release 并上传 exe
         uses: softprops/action-gh-release@v2
         with:
           files: build/bin/Python打包工具.exe
-          name: ${{ github.ref_name }}
-          body: 自动发布 ${{ github.ref_name }}
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body: 自动发布 ${{ steps.version.outputs.version }}
