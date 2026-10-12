@@ -60,11 +60,37 @@
 
 开发调试：`wails dev` 可热重载前端。
 
+## 自动构建发布（云端 CI）
+
+本项目已接入**双平台全自动发布**：只需**修改版本号并 push 到码云**，其余全部自动完成，本地无需再手动打包上传。
+
+```
+push 源码到码云
+   ├─→ 码云 Gitee Go：自动编译混淆版 exe → 打 Tag → 发布到码云 Releases
+   └─→ 码云仓库镜像：自动同步代码与 Tag 到 GitHub
+            └─→ GitHub Actions：检测到 v* Tag → 自动编译 → 发布到 GitHub Releases
+```
+
+**发布步骤（唯一要做的）**：
+
+1. 修改 `internal/version/version.go` 中的版本号（唯一版本来源，如 `"6.2.0"`）
+2. `git push` 到码云 master
+
+**依赖配置（已一次性完成）**：
+
+- 码云 Gitee Go 流水线：`auto-build-release`（push master 触发，编译 + 打 Tag + 发 Release）
+- 码云「仓库镜像管理」：Push 方向自动同步到 GitHub
+- GitHub Actions 工作流：`.github/workflows/release.yml`（`v*` Tag 触发；含手动触发入口，可在 Actions 页手动 Run workflow 验证）
+- GitHub 私人令牌：码云镜像使用（仓库级，含 `Contents`、`Workflows` 读写权限）
+
 ## 技术栈
 
 Go · Wails v2 · React · Tailwind CSS · PyInstaller · PyArmor
 
 ## 更新日志
+
+### v6.2.0
+- **接入云端自动发布**：push 码云后由码云 Gitee Go 自动编译混淆版 exe 并发布到码云 Releases；码云仓库镜像自动同步代码与 Tag 到 GitHub，GitHub Actions 检测到 `v*` Tag 后自动编译并发布到 GitHub Releases，本地无需再手动打包上传
 
 ### v6.1.0
 - **修复 streamlit 等包打包后报错**：打包时自动复制环境里所有已装包的发行版元数据（`--copy-metadata`），不再因缺 dist-info 报 `PackageNotFoundError`
