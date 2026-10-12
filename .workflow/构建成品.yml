@@ -27,6 +27,7 @@ stages:
             curl -fsSL -o /tmp/go.tgz https://mirrors.aliyun.com/golang/go1.25.14.linux-amd64.tar.gz
             rm -rf /usr/local/go
             tar -C /usr/local -xzf /tmp/go.tgz
+            export GOROOT=/usr/local/go
             export PATH=/usr/local/go/bin:$PATH
             go version
             echo "== 安装 wails 2.15.0 / garble =="
