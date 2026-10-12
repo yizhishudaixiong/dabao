@@ -1,0 +1,65 @@
+version: "1.0"
+name: auto-build-release
+displayName: 自动构建并发布
+stages:
+- name: 构建并发布
+  displayName: 构建并发布
+  strategy: naturally
+  trigger: auto
+  steps:
+  - step: build@golang
+    name: build_exe
+    displayName: 编译 exe 并发布
+    golangVersion: "1.16"
+    commands:
+    - set -e
+    - export GOPROXY=https://goproxy.cn
+    - echo "== 安装新版 Go =="
+    - curl -fsSL -o /tmp/go.tgz https://mirrors.aliyun.com/golang/go1.22.12.linux-amd64.tar.gz
+    - rm -rf /usr/local/go
+    - tar -C /usr/local -xzf /tmp/go.tgz
+    - export PATH=/usr/local/go/bin:$PATH
+    - go version
+    - echo "== 安装 wails / garble =="
+    - go install github.com/wailsapp/wails/v2/cmd/wails@latest
+    - go install mvdan.cc/garble@latest
+    - export PATH=$(go env GOPATH)/bin:$PATH
+    - wails version
+    - echo "== 安装 Node =="
+    - curl -fsSL -o /tmp/node.txz https://npmmirror.com/mirrors/node/v20.19.0/node-v20.19.0-linux-x64.tar.xz
+    - mkdir -p /opt/node
+    - tar -C /opt/node --strip-components=1 -xJf /tmp/node.txz
+    - export PATH=/opt/node/bin:$PATH
+    - node -v
+    - npm -v
+    - echo "== 构建 Windows exe（混淆版）=="
+    - wails build -platform windows/amd64 -obfuscated -garbleargs "-tiny -seed=random"
+    - ls -la build/bin
+    - echo "== 发布到码云 Releases =="
+    - "VERSION=$(grep -oP 'Version\\s*=\\s*\"\\K[^\"]+' internal/version/version.go)"
+    - "echo \"版本: $VERSION\""
+    - TAG="v$VERSION"
+    - git tag "$TAG" 2>/dev/null || echo "tag 已存在，继续"
+    - "git push \"https://yizhishudaixiong:${GITEE_TOKEN}@gitee.com/yizhishudaixiong/dabao.git\"\
+      \ \"$TAG\" 2>&1 || echo \"tag 推送失败，继续尝试 Release\""
+    - "RESP=$(curl -s -X POST \"https://gitee.com/api/v5/repos/yizhishudaixiong/dabao/releases\"\
+      \ -d \"access_token=${GITEE_TOKEN}&tag_name=${TAG}&name=${TAG}&body=自动发布 ${TAG}\"\
+      )"
+    - "echo \"创建 Release 响应: $RESP\""
+    - "RID=$(echo \"$RESP\" | grep -oP '\"id\":\\s*\\K[0-9]+' | head -1)"
+    - "echo \"Release id: $RID\""
+    - "if [ -n \"$RID\" ]; then"
+    - "  curl -s -X POST \"https://gitee.com/api/v5/repos/yizhishudaixiong/dabao/releases/${RID}/attach_files?access_token=${GITEE_TOKEN}\"\
+      \ -F \"file=@build/bin/Python打包工具.exe\""
+    - else
+    - '  echo "Release 创建失败，跳过附件上传"'
+    - fi
+triggers:
+  trigger: auto
+  push:
+    branches:
+      prefix:
+      - master
+      precise: []
+      include: []
+notify: []
