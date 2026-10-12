@@ -53,8 +53,7 @@
 也可在项目根目录手动执行：
 
 ```powershell
-.\build.ps1        # 混淆构建（默认，配合 main.tsx 转接层）
-.\build_open.ps1   # 无混淆构建（备用）
+.\build.ps1   # 混淆构建（默认，配合 main.tsx 转接层）
 ```
 
 产物：`build/bin/Python打包工具.exe`（自包含，可直接分发）。
