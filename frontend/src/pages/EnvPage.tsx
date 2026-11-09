@@ -10,6 +10,10 @@ export default function EnvPage({
   setEnvs,
   selected,
   setSelected,
+  root,
+  setRoot,
+  searched,
+  setSearched,
   downloading,
   setDownloading,
 }: {
@@ -17,14 +21,19 @@ export default function EnvPage({
   setEnvs: Dispatch<SetStateAction<PythonEnv[]>>
   selected: PythonEnv | null
   setSelected: (e: PythonEnv | null) => void
+  // 自定义根目录与"已搜索"标记由 App 层持有，切页回来不会丢
+  root: string
+  setRoot: (v: string) => void
+  searched: boolean
+  setSearched: (v: boolean) => void
   // 下载便携版是否进行中（由 App 层统一忙碌状态传入：下载期间禁用切页 + 后端拦截退出）
   downloading: boolean
   setDownloading: (v: boolean) => void
 }) {
-  const [root, setRoot] = useState('')
-  const [searching, setSearching] = useState(false)
+  // 当前搜索模式：'' 空闲 / 'quick' 快速搜索（不遍历磁盘）/ 'deep' 深度扫描（实时遍历 C 盘）
+  const [scanning, setScanning] = useState<'' | 'quick' | 'deep'>('')
+  const searching = scanning !== ''
   const [msg, setMsg] = useState('')
-  const [searched, setSearched] = useState(false)
 
   // 新建虚拟环境表单状态
   const [basePython, setBasePython] = useState('')
@@ -63,12 +72,21 @@ export default function EnvPage({
 
   // 复制到剪贴板
   const copy = async (key: 'url' | 'direct') => {
+    const text = key === 'url' ? PY_DOWNLOAD_URL : PY_DIRECT_URL
     try {
-      await navigator.clipboard.writeText(key === 'url' ? PY_DOWNLOAD_URL : PY_DIRECT_URL)
+      // 优先用 Wails 原生剪贴板：WebView2 里 navigator.clipboard 依赖安全上下文，
+      // 经常直接抛错（表现为"复制失败"），而原生接口任何情况都能用
+      await window.runtime.ClipboardSetText(text)
       setCopied(key)
       setTimeout(() => setCopied(''), 2000)
     } catch {
-      setMsg('复制失败，请手动选中地址复制')
+      try {
+        await navigator.clipboard.writeText(text)
+        setCopied(key)
+        setTimeout(() => setCopied(''), 2000)
+      } catch {
+        setMsg('复制失败，请手动选中地址复制')
+      }
     }
   }
 
@@ -78,12 +96,17 @@ export default function EnvPage({
     if (dir) setRoot(dir)
   }
 
-  // 自动搜索：扫描系统环境变量 + 自定义环境根目录下的虚拟环境 + 已下载的便携版
-  const search = async () => {
-    setSearching(true)
-    setMsg('')
+  // 搜索环境，两种模式（都不做跨次缓存，每次都是实时探测，环境变了立刻能反映）：
+  //  - quick：只查环境变量 / Python 启动器 / 常见安装目录（含 conda）/ 自定义根目录，不遍历磁盘
+  //  - deep：在 quick 基础上实时遍历整个 C 盘，捕捉 conda、绿色版等非标准位置的 Python
+  const runSearch = async (mode: 'quick' | 'deep') => {
+    setScanning(mode)
+    setMsg(mode === 'deep' ? '正在遍历 C 盘查找 Python（约 1~30 秒，取决于磁盘速度）…' : '')
     try {
-      const list = await window.go.main.App.SearchEnvironments(root.trim())
+      const list =
+        mode === 'deep'
+          ? await window.go.main.App.SearchEnvironmentsDeep(root.trim())
+          : await window.go.main.App.SearchEnvironments(root.trim())
       setEnvs(list)
       setSearched(true)
       // 自动选中：仅当前未选中（或选中项已不在列表）时生效。
@@ -104,15 +127,24 @@ export default function EnvPage({
       }
       setMsg(
         list.length === 0
-          ? '未搜索到 Python 环境，可以点击下方「下载便携版 Python」自动获取，或手动选择 python.exe'
-          : `共发现 ${list.length} 个环境`,
+          ? mode === 'deep'
+            ? '深度扫描完成：全盘都没有找到 Python，可以点下方「下载便携版 Python」自动获取，或手动选择 python.exe'
+            : '未搜索到 Python 环境。装在非标准位置（conda / 绿色版）时请点「深度扫描」，或直接下载内置便携版'
+          : `共发现 ${list.length} 个环境${mode === 'deep' ? '（已遍历全盘）' : ''}`,
       )
     } catch (e) {
       setMsg('搜索失败: ' + String(e))
     } finally {
-      setSearching(false)
+      setScanning('')
     }
   }
+
+  // 事件回调里通过 ref 取最新的 runSearch：useEffect(..., []) 的闭包会停留在首次渲染，
+  // 导致下载完成/删除后自动重搜时用的是过期的 root 与 selected（丢自定义目录、抢改已选环境）。
+  const searchRef = useRef(runSearch)
+  useEffect(() => {
+    searchRef.current = runSearch
+  })
 
   // 下载面板：点击展开/收起（下载中禁止收起），展开时加载版本清单与存放目录
   const openDl = async () => {
@@ -188,7 +220,7 @@ export default function EnvPage({
         setDlMsg(
           `✅ Python ${p.version} 下载完成，已自动加入上方「Python 环境」下拉框，选中即可使用`,
         )
-        search()
+        searchRef.current('quick')
       } else {
         // 取消下载：明确提示（残缺文件已自动清理，下次重新下载）
         const cancelled = String(p.message).includes('取消')
@@ -237,7 +269,7 @@ export default function EnvPage({
       await window.go.main.App.DeletePortablePython(version)
       setCleanList((l) => l.filter((x) => x.version !== version))
       setCleanMsg(`已删除 Python ${version}（含其安装的依赖）`)
-      search()
+      searchRef.current('quick')
     } catch (e) {
       setCleanMsg('删除失败：' + String(e))
     } finally {
@@ -252,7 +284,9 @@ export default function EnvPage({
         setEnvs((prev) => (prev.some((e) => e.path === env.path) ? prev : [env, ...prev]))
         setSelected(env)
       } catch (e) {
-        setMsg(String(e))
+        // 用户点了取消不算错误，不要把"未选择文件"当失败信息甩给用户
+        const m = String(e)
+        if (!m.includes('未选择')) setMsg(m)
       }
       return
     }
@@ -337,18 +371,37 @@ export default function EnvPage({
                   // 若只有「自定义环境路径」一个 option，浏览器会把它隐式选中，
                   // 用户再点击不会触发 change 事件，导致无法弹出文件选择框。
                   <option value="" disabled>
-                    未搜索到环境，请选择下方「手动选择」
+                    尚未加载环境，请点右侧「快速搜索」
                   </option>
                 )}
                 <option value={CUSTOM}>＋ 自定义环境路径…（选择 python.exe）</option>
               </Select>
             </div>
-            <div className="flex items-end">
-              <Button variant="primary" onClick={search} disabled={searching}>
-                {searching ? '搜索中…' : '🔍 自动搜索'}
+            <div className="flex items-end gap-2">
+              <Button variant="primary" onClick={() => runSearch('quick')} disabled={searching}>
+                {scanning === 'quick' ? '搜索中…' : '🔍 快速搜索'}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => runSearch('deep')}
+                disabled={searching}
+                title="实时遍历整个 C 盘，寻找安装在任意位置的 Python（conda / 绿色版等）；耗时约 1~30 秒，取决于磁盘速度"
+              >
+                {scanning === 'deep' ? '扫描中…' : '🌐 深度扫描'}
               </Button>
             </div>
           </div>
+
+          <p className="text-xs leading-relaxed text-ink-faint">
+            「快速搜索」只查环境变量、Python 启动器、常见安装目录（含 conda）和你指定的根目录，通常 1 秒内返回、不扫盘；
+            找不到装在别处的 Python 时，再用「深度扫描」实时遍历整个 C 盘（每次都会重新扫描，结果不会过期）。
+          </p>
+
+          {!searched && envs.length > 0 && (
+            <p className="text-xs text-ink-faint">
+              目前只列出了上次使用的环境；点「快速搜索」可加载本机全部 Python 环境。
+            </p>
+          )}
 
           {msg && <p className="text-sm text-ink-soft">{msg}</p>}
         </div>
@@ -394,11 +447,28 @@ export default function EnvPage({
               </Button>
             </div>
 
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-ink-faint">安装完成后，点击下方按钮重新搜索</span>
-              <Button variant="ghost" size="sm" onClick={search} disabled={searching}>
-                {searching ? '搜索中…' : '🔍 重新搜索'}
-              </Button>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs text-ink-faint">
+                装在非标准位置（conda / 绿色版）时用深度扫描；装好后也可直接重新快速搜索
+              </span>
+              <div className="flex shrink-0 gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => runSearch('deep')}
+                  disabled={searching}
+                >
+                  {scanning === 'deep' ? '扫描中…' : '🌐 深度扫描全盘'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => runSearch('quick')}
+                  disabled={searching}
+                >
+                  {scanning === 'quick' ? '搜索中…' : '🔍 快速搜索'}
+                </Button>
+              </div>
             </div>
           </div>
         </Card>

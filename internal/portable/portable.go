@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,6 +54,10 @@ func Versions() []VersionInfo {
 	}
 }
 
+// safeVersionRe 允许的便携版版本号形态（3.12 / 3.12.14）。
+// 用于拼目录名并做 RemoveAll 的场景，必须挡住 ".."、路径分隔符等字符。
+var safeVersionRe = regexp.MustCompile(`^\d+\.\d+(\.\d+)?$`)
+
 // versionOK 判断版本号是否在可下载清单中
 func versionOK(version string) bool {
 	for _, v := range Versions() {
@@ -84,8 +89,19 @@ type PortablePython struct {
 	SizeMB  int64  `json:"sizeMB"`  // 文件夹占用大小（MB）
 }
 
-// List 列出所有已下载的便携版
+// List 列出所有已下载的便携版（不统计目录体积）。
+// 供环境搜索等高频路径使用：统计体积要递归遍历整个 Python 目录（上千个文件），
+// 每次搜索都做会白白多等几百毫秒。
 func List() []PortablePython {
+	return list(false)
+}
+
+// ListWithSize 同 List，但额外统计每个版本的目录占用（供「清理 Python 环境」面板展示）。
+func ListWithSize() []PortablePython {
+	return list(true)
+}
+
+func list(withSize bool) []PortablePython {
 	out := []PortablePython{}
 	entries, err := os.ReadDir(RootDir())
 	if err != nil {
@@ -96,7 +112,9 @@ func List() []PortablePython {
 			continue
 		}
 		name := e.Name()
-		if !strings.HasPrefix(name, "cpython-") {
+		// 跳过解压中的临时目录（cpython-<版本>.tmp）：解压到一半被中断时会留下它，
+		// 名字里带 .tmp 无法通过版本号校验，出现在列表里就成了"删不掉的坏版本"
+		if !strings.HasPrefix(name, "cpython-") || strings.HasSuffix(name, ".tmp") {
 			continue
 		}
 		dir := filepath.Join(RootDir(), name)
@@ -104,12 +122,15 @@ func List() []PortablePython {
 		if _, err := os.Stat(py); err != nil {
 			continue
 		}
-		out = append(out, PortablePython{
+		item := PortablePython{
 			Version: strings.TrimPrefix(name, "cpython-"),
 			Path:    py,
 			Dir:     dir,
-			SizeMB:  dirSizeMB(dir),
-		})
+		}
+		if withSize {
+			item.SizeMB = dirSizeMB(dir)
+		}
+		out = append(out, item)
 	}
 	return out
 }
@@ -258,7 +279,17 @@ func Download(version string, d *Downloader) (string, error) {
 
 // Delete 删除指定版本的整个文件夹（含已装依赖）
 func Delete(version string) error {
-	dir := filepath.Join(RootDir(), "cpython-"+version)
+	// 安全护栏：version 来自目录名（cpython-<版本>），但这是 RemoveAll 的目标，
+	// 必须先挡住路径逃逸（如 ".."）。否则 filepath.Join 会把 "cpython-.." 和 ".."
+	// 一起清理掉，最终删到 runtime 之外的目录。
+	if !safeVersionRe.MatchString(version) {
+		return fmt.Errorf("版本号无效：%q", version)
+	}
+	root := filepath.Clean(RootDir())
+	dir := filepath.Clean(filepath.Join(root, "cpython-"+version))
+	if !strings.HasPrefix(dir, root+string(filepath.Separator)) {
+		return fmt.Errorf("安全校验失败：拒绝删除非受管路径 %s", dir)
+	}
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("未找到该便携版 Python（%s）", version)
 	}
@@ -315,9 +346,27 @@ func downloadFile(ctx context.Context, url, dest string, total int64, d *Downloa
 	defer chunkCancel()
 	chunkSize := chunkSizeCalc(total)
 	var wg sync.WaitGroup
+	// 进度只累计"实际已写入磁盘的字节"：先把已存在的分块（断点续传遗留）统计成基线，
+	// 之后每块只累加本次新写入量。原实现按分块最终大小累加，重试时会对同一块重复计数，
+	// 导致百分比冲到 100% 以上。
 	var done atomic.Int64
+	for i := int64(0); i < chunkCount; i++ {
+		cstart, cend, ok := chunkRange(i, total, chunkSize)
+		if !ok {
+			break
+		}
+		if fi, err := os.Stat(partPath(dest, i)); err == nil {
+			n := fi.Size()
+			if limit := cend - cstart + 1; n > limit {
+				n = limit
+			}
+			if n > 0 {
+				done.Add(n)
+			}
+		}
+	}
 	if d != nil && d.OnDownload != nil {
-		d.OnDownload(0, total)
+		d.OnDownload(done.Load(), total)
 	}
 	// 首次有数据到达时，把"等待代理拉取"切换为"多进程下载中"（只提示一次）
 	var dataOnce sync.Once
@@ -339,18 +388,13 @@ func downloadFile(ctx context.Context, url, dest string, total int64, d *Downloa
 		var mu sync.Mutex
 		beforeDone := done.Load()
 		for i := int64(0); i < chunkCount; i++ {
-			start := i * chunkSize
-			end := start + chunkSize - 1
-			if start >= total {
+			start, end, ok := chunkRange(i, total, chunkSize)
+			if !ok {
 				break
 			}
-			if end >= total {
-				end = total - 1
-			}
-			part := fmt.Sprintf("%s.part%d", dest, i)
-			// 已完整下好的块直接跳过（续传/重试都靠这个）
+			part := partPath(dest, i)
+			// 已完整下好的块直接跳过（续传/重试都靠这个；基线里已统计过，不再累加）
 			if fi, err := os.Stat(part); err == nil && fi.Size() == end-start+1 {
-				done.Add(end - start + 1)
 				continue
 			}
 			wg.Add(1)
@@ -360,7 +404,8 @@ func downloadFile(ctx context.Context, url, dest string, total int64, d *Downloa
 				// 20MB 分 4 块，每块约 5MB，正常网络几十秒足够，90 秒非常宽松。
 				bctx, bcancel := context.WithTimeout(chunkCtx, 90*time.Second)
 				defer bcancel()
-				if err := downloadChunk(bctx, url, fmt.Sprintf("%s.part%d", dest, i), start, end, d); err != nil {
+				written, err := downloadChunk(bctx, url, partPath(dest, i), start, end)
+				if err != nil {
 					mu.Lock()
 					if firstErr == nil {
 						firstErr = err
@@ -368,8 +413,8 @@ func downloadFile(ctx context.Context, url, dest string, total int64, d *Downloa
 					mu.Unlock()
 					return
 				}
-				if fi, err := os.Stat(fmt.Sprintf("%s.part%d", dest, i)); err == nil {
-					done.Add(fi.Size())
+				if written > 0 {
+					done.Add(written)
 					notify(done.Load(), total)
 				}
 			}(start, end, i)
@@ -407,7 +452,7 @@ func downloadFile(ctx context.Context, url, dest string, total int64, d *Downloa
 		return err
 	}
 	for i := int64(0); i < chunkCount; i++ {
-		part := fmt.Sprintf("%s.part%d", dest, i)
+		part := partPath(dest, i)
 		f, err := os.Open(part)
 		if err != nil {
 			continue
@@ -420,11 +465,38 @@ func downloadFile(ctx context.Context, url, dest string, total int64, d *Downloa
 		f.Close()
 		_ = os.Remove(part)
 	}
-	out.Close()
+	if err := out.Close(); err != nil {
+		return err
+	}
+	// 合并后校验总长度：分块都"成功"但内容缺失（镜像提前断流未报错）时，
+	// 带着一个坏包去解压只会得到莫名其妙的解压错误，这里提前给出明确提示
+	if fi, err := os.Stat(dest); err != nil {
+		return err
+	} else if fi.Size() != total {
+		return fmt.Errorf("下载文件大小不符：期望 %d 字节，实际 %d 字节（镜像返回的数据不完整，请重试）", total, fi.Size())
+	}
 	if d != nil && d.OnDownload != nil {
 		d.OnDownload(total, total)
 	}
 	return nil
+}
+
+// chunkRange 计算第 i 个分块负责的字节区间；起点已超出文件大小时返回 ok=false。
+func chunkRange(i, total, chunkSize int64) (start, end int64, ok bool) {
+	start = i * chunkSize
+	if start >= total {
+		return 0, 0, false
+	}
+	end = start + chunkSize - 1
+	if end >= total {
+		end = total - 1
+	}
+	return start, end, true
+}
+
+// partPath 第 i 个分块的临时文件路径
+func partPath(dest string, i int64) string {
+	return fmt.Sprintf("%s.part%d", dest, i)
 }
 
 // probeSize 请求第 1 个字节：返回文件总大小、是否支持 Range。
@@ -460,66 +532,89 @@ func probeSize(ctx context.Context, client *http.Client, url string) (total int6
 	}
 }
 
-// chunkSizeCalc 计算分块大小（避免整除为 0）
+// chunkSizeCalc 计算分块大小（向上取整）。
+// 不能向下取整：total 不能被 chunkCount 整除时，最后几个字节没人负责下载
+// （4 块各下 total/4，末尾 total%4 字节缺失），合并出的 tar.gz 短一截，
+// 要到解压时才报一个与下载毫无关系的错误，极难排查。
 func chunkSizeCalc(total int64) int64 {
-	if total < chunkCount {
+	if total <= 0 {
 		return 1
 	}
-	return total / chunkCount
+	size := (total + chunkCount - 1) / chunkCount
+	if size < 1 {
+		size = 1
+	}
+	return size
 }
 
-// downloadChunk 下载 [start, end] 字节范围到 part 文件（支持续传，可随时取消）
-func downloadChunk(ctx context.Context, url, part string, start, end int64, d *Downloader) error {
+// downloadChunk 下载 [start, end] 字节范围到 part 文件（支持续传，可随时取消）。
+// 返回本次实际写入的字节数，供上层累计进度（不要用文件总大小，否则重试会重复计数）。
+func downloadChunk(ctx context.Context, url, part string, start, end int64) (int64, error) {
 	// 已存在部分数据：从断点继续
 	var resume int64
 	if fi, err := os.Stat(part); err == nil {
 		resume = fi.Size()
 	}
+	// 分块文件比应有长度还大：上次写入异常（或换了文件大小的代理），直接作废重下，
+	// 否则 resume 会越过本块末尾，Range 请求直接非法
+	if want := end - start + 1; resume > want {
+		if err := os.Remove(part); err != nil {
+			return 0, err
+		}
+		resume = 0
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start+resume, end))
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 	resp, err := dlClient.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 206 {
-		return fmt.Errorf("镜像不支持断点续传（状态码 %d）", resp.StatusCode)
+		return 0, fmt.Errorf("镜像不支持断点续传（状态码 %d）", resp.StatusCode)
 	}
 
 	// 206：从 resume 偏移继续写
 	f, err := os.OpenFile(part, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer f.Close()
 	if _, err := f.Seek(resume, io.SeekStart); err != nil {
-		return err
+		return 0, err
 	}
+	var written int64
 	buf := make([]byte, 1024*1024)
 	for {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("已取消")
+			return written, fmt.Errorf("已取消")
 		}
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
 			if _, werr := f.Write(buf[:n]); werr != nil {
-				return werr
+				return written, werr
 			}
+			written += int64(n)
 		}
 		if rerr == io.EOF {
 			break
 		}
 		if rerr != nil {
-			return rerr
+			return written, rerr
 		}
 	}
-	return nil
+	// 镜像提前 EOF（断流但没报错）时，块文件会短一截。这里直接当错误返回，
+	// 让上层按"失败块"重试；否则要等到合并时才发现长度不符，重试逻辑根本不会触发。
+	if expected := end - start + 1 - resume; written != expected {
+		return written, fmt.Errorf("本块数据不完整（应有 %d 字节，实际 %d 字节）", expected, written)
+	}
+	return written, nil
 }
 
 // ---- 解压 ----
@@ -581,7 +676,11 @@ func verifyPython(exe, version string) error {
 		return fmt.Errorf("便携版 Python 验证失败：%v\n建议：删除后重新下载", err)
 	}
 	got := strings.TrimSpace(string(out))
-	short := version[:strings.LastIndex(version, ".")] // 3.12
+	// 取主次版本号（3.12.14 -> 3.12）；异常版本号没有小数点时退回完整串，避免切片越界 panic
+	short := version
+	if i := strings.LastIndex(version, "."); i > 0 {
+		short = version[:i]
+	}
 	if !strings.Contains(got, short) {
 		return fmt.Errorf("便携版 Python 版本异常（期望 %s，实际 %s）", version, got)
 	}

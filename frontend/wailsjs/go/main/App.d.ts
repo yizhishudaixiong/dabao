@@ -57,6 +57,8 @@ export function ScanResources(arg1:string):Promise<Array<config.ResourceItem>>;
 
 export function SearchEnvironments(arg1:string):Promise<Array<config.PythonEnv>>;
 
+export function SearchEnvironmentsDeep(arg1:string):Promise<Array<config.PythonEnv>>;
+
 export function SelectCustomPython():Promise<config.PythonEnv>;
 
 export function SelectCustomRoot():Promise<string>;

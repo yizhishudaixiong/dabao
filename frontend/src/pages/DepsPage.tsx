@@ -1,4 +1,4 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useState } from 'react'
 import { Badge, Button, Card, Seg } from '../components/ui'
 import LogPanel from '../components/LogPanel'
 import type { BuildConfig, DepInfo, DepsResult } from '../types/models'
@@ -30,7 +30,8 @@ export default function DepsPage({
   depsLogs,
   depsProgress,
   analysisLogs,
-  setAnalysisLogs,
+  pushAnalysisLog,
+  clearAnalysisLog,
   installing,
   setInstalling,
   analyzing,
@@ -44,23 +45,39 @@ export default function DepsPage({
   depsLogs: string[]
   depsProgress: { percent: number; stage: string } | null
   analysisLogs: string[]
-  setAnalysisLogs: Dispatch<SetStateAction<string[]>>
+  // 分析引擎日志：由 App 层统一缓冲后传入（push 追加、clear 清空）
+  pushAnalysisLog: (line: string) => void
+  clearAnalysisLog: () => void
   installing: boolean
   setInstalling: (v: boolean) => void
   analyzing: boolean
   setAnalyzing: (v: boolean) => void
   onCancelDeps: () => void
 }) {
-  const [checked, setChecked] = useState<Set<string>>(new Set())
+  // 默认勾选全部缺失项：分析结果存在 App 层，切页回来重新挂载时按缺失项恢复，
+  // 不会出现"分析完切走再回来，勾选清零、安装按钮变灰"的问题
+  const [checked, setChecked] = useState<Set<string>>(
+    () => new Set((deps?.missing ?? []).map((m) => m.pkgName)),
+  )
   // 隐式依赖导入是否展开（默认收起，点击按钮才显示；已有已添加项时默认展开）
   const [showHidden, setShowHidden] = useState(cfg.hiddenImports.length > 0)
   // 排除模块折叠（默认收起，点击按钮才展开；已有已添加项时默认展开）
   const [showExclude, setShowExclude] = useState(cfg.excludeModules.length > 0)
   // 已用时计时（秒）
   const [elapsed, setElapsed] = useState(0)
-  // 下载源：默认阿里源；__custom__ 时使用自定义输入
-  const [mirror, setMirror] = useState('aliyun')
-  const [customMirror, setCustomMirror] = useState('')
+  // 下载源：从打包配置还原（cfg 才是真正传给后端的值），__custom__ 时使用自定义输入。
+  // 此前本地写死默认阿里源、而 cfg.pipMirror 为空（等于官方源），界面显示与实际行为不一致。
+  const mirrorKeyOf = (url: string) => {
+    if (!url) return ''
+    for (const [k, v] of Object.entries(MIRROR_URLS)) {
+      if (v === url) return k
+    }
+    return '__custom__'
+  }
+  const [mirror, setMirror] = useState(() => mirrorKeyOf(cfg.pipMirror))
+  const [customMirror, setCustomMirror] = useState(() =>
+    mirrorKeyOf(cfg.pipMirror) === '__custom__' ? cfg.pipMirror : '',
+  )
   const [msg, setMsg] = useState('')
   const [hiddenInput, setHiddenInput] = useState('')
   const [excludeInput, setExcludeInput] = useState('')
@@ -91,7 +108,7 @@ export default function DepsPage({
   const analyze = async () => {
     setAnalyzing(true)
     setMsg('')
-    setAnalysisLogs([])
+    clearAnalysisLog()
     try {
       // 后端统一分析：入口脚本依赖 + 必需依赖（PyInstaller，以及选了加密时的 PyArmor）
       const r = await window.go.main.App.AnalyzeDeps(cfg.entryScript, cfg.pythonPath, cfg.encryptMode, effectiveMirror)
@@ -106,7 +123,7 @@ export default function DepsPage({
       // 同时展示在提示文字中；面板在失败后保留，用户能看到背后的真实原因
       const msgText = '分析失败: ' + String(e)
       setMsg(msgText)
-      setAnalysisLogs((l) => [...l, msgText])
+      pushAnalysisLog(msgText)
     } finally {
       setAnalyzing(false)
     }
@@ -157,6 +174,10 @@ export default function DepsPage({
     setMsg('')
     try {
       await window.go.main.App.InstallDeps(cfg.pythonPath, allPkgs, effectiveMirror)
+      // 安装已结束，接下来的重新分析要单独标记：否则状态条一直显示"安装依赖中"，
+      // 与实际阶段不符（同时仍保持忙碌锁定，避免分析期间切页）
+      setInstalling(false)
+      setAnalyzing(true)
       setMsg('安装完成，正在重新分析…')
       const r = await window.go.main.App.AnalyzeDeps(cfg.entryScript, cfg.pythonPath, cfg.encryptMode, effectiveMirror)
       setDeps(r)
@@ -166,6 +187,7 @@ export default function DepsPage({
       setMsg('安装失败: ' + String(e))
     } finally {
       setInstalling(false)
+      setAnalyzing(false)
     }
   }
 

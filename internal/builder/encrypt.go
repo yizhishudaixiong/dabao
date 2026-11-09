@@ -4,12 +4,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"pypacker/internal/cmdutil"
 	"pypacker/internal/config"
 	"pypacker/internal/deps"
+	"pypacker/internal/errhint"
 )
+
+// licenseLimitRe 匹配 PyArmor 试用版的容量限制报错。
+// 实测输出为 "ERROR    out of license"（退出码 2，且只写出 runtime、不产出加密脚本）。
+var licenseLimitRe = regexp.MustCompile(`(?i)out of license`)
+
+// isLicenseOutError 判断加密失败是否由试用版容量限制（单代码对象 32KB）引起。
+// 只有它才应该按"超限跳过、明文打包"处理，其它错误必须原样上报。
+func isLicenseOutError(out string) bool {
+	return licenseLimitRe.MatchString(out)
+}
 
 // encryptProject 使用 PyArmor 加密用户项目中的全部自写 .py 模块（递归，逐文件加密），
 // 返回加密后的入口脚本路径、需要随包分发的 pyarmor_runtime 运行时目录、
@@ -106,8 +118,19 @@ func (w *Workspace) encryptProject(cfg *config.BuildConfig, onLog func(string), 
 		}
 		cmd := cmdutil.Command(pyarmorExe, args...)
 		cmd.Dir = w.Root
-		_, err := cmd.CombinedOutput()
+		out, err := cmd.CombinedOutput()
+		raw := strings.TrimSpace(string(out))
 		if err != nil {
+			// 只有确实是试用版容量限制（PyArmor 实测输出 "ERROR out of license"）才按超限处理。
+			// 语法错误、磁盘满、权限不足等必须把 pyarmor 的原始报错交出来，
+			// 否则一律提示"文件太大"，用户会被彻底带偏。
+			if !isLicenseOutError(raw) {
+				if onLog != nil {
+					onLog(fmt.Sprintf("[加密] ✗ %s 加密失败：%v", rel, err))
+					onLog(errhint.Tail(raw, 15))
+				}
+				return "", nil, "", fmt.Errorf("加密 %s 失败：%v\n%s", rel, err, errhint.Tail(raw, 15))
+			}
 			// 超限（试用版限制）：跳过加密，明文兜底
 			if onLog != nil {
 				onLog(fmt.Sprintf("[加密] ⚠ %s 超过 PyArmor 试用版限制（单个代码对象 32KB），将以明文打包", rel))
@@ -126,7 +149,8 @@ func (w *Workspace) encryptProject(cfg *config.BuildConfig, onLog func(string), 
 		// 加密成功：把加密后的 .py 复制到加密根对应相对位置（保持项目目录结构）
 		encFile := filepath.Join(outDir, filepath.Base(rel))
 		if !fileExists(encFile) {
-			return "", nil, "", fmt.Errorf("未找到加密产物 %s: %v", rel, err)
+			// 退出码为 0 却没有产物：把 pyarmor 的输出带出来，便于定位（而不是显示 "<nil>"）
+			return "", nil, "", fmt.Errorf("PyArmor 未生成加密产物 %s\n%s", rel, errhint.Tail(raw, 15))
 		}
 		dst := filepath.Join(encProjRoot, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -177,8 +201,18 @@ func collectProjectPyFiles(root string) ([]string, error) {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if path != root && (name == "__pycache__" || name == "venv" || name == ".venv" || name == ".git" ||
-				name == "build" || name == "dist" || name == "site-packages" || strings.HasPrefix(name, "env")) {
+			if path == root {
+				return nil
+			}
+			// 固定噪音目录直接跳过
+			switch name {
+			case "__pycache__", "venv", ".venv", ".git", "build", "dist", "site-packages":
+				return filepath.SkipDir
+			}
+			// 任意命名的虚拟环境按 pyvenv.cfg 标志识别。
+			// 不能用 strings.HasPrefix(name, "env") 猜：那样会把用户自己的
+			// environment/、envs/ 等代码目录一起跳过，导致这些文件漏加密（明文进包）。
+			if _, err := os.Stat(filepath.Join(path, "pyvenv.cfg")); err == nil {
 				return filepath.SkipDir
 			}
 			return nil

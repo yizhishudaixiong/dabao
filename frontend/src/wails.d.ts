@@ -17,6 +17,8 @@ declare global {
       main: {
         App: {
           SearchEnvironments(customRoot: string): Promise<PythonEnv[]>
+          // 深度扫描：实时遍历整个 C 盘（较慢），用于寻找非标准位置的 Python
+          SearchEnvironmentsDeep(customRoot: string): Promise<PythonEnv[]>
           SelectCustomPython(): Promise<PythonEnv>
           SelectEntryScript(): Promise<string>
           SelectIcon(): Promise<string>

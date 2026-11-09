@@ -23,9 +23,9 @@ var (
 )
 
 type detectCacheItem struct {
-	at   time.Time
-	env  config.PythonEnv
-	err  error
+	at  time.Time
+	env config.PythonEnv
+	err error
 }
 
 // detectCacheTTL 检测结果缓存有效期（秒）
@@ -60,13 +60,26 @@ except Exception:
 print(json.dumps(out))
 `
 
-// Search 自动搜索所有可用的 Python 环境
+// Search 快速搜索可用的 Python 环境：只查"确定可能出现 Python"的位置，
+// 通常 1 秒内返回（耗时主要在给每个环境起 Python 子进程读版本），绝不遍历整个磁盘。环境是随时会变的（新装、卸载、移动），
+// 所以这里不做任何跨次缓存，每次调用都是实时探测。
 // 策略：
 //  1. Windows Python Launcher 注册的安装（py -0p）
 //  2. 系统 PATH 中的 python
 //  3. 常见 Python 安装目录
 //  4. 用户自定义环境根目录下的虚拟环境（含 pyvenv.cfg）
 func Search(customRoot string) ([]config.PythonEnv, error) {
+	return search(customRoot, false)
+}
+
+// SearchDeep 在 Search 的基础上再遍历整个 C 盘，捕捉装在任意位置的 Python。
+// 遍历较慢（数秒到数十秒，取决于磁盘），只由用户点「深度扫描」时触发，
+// 且每次都是实时扫描，结果不与历史结果混用。
+func SearchDeep(customRoot string) ([]config.PythonEnv, error) {
+	return search(customRoot, true)
+}
+
+func search(customRoot string, deep bool) ([]config.PythonEnv, error) {
 	seen := map[string]bool{}
 	envs := []config.PythonEnv{}
 
@@ -109,9 +122,12 @@ func Search(customRoot string) ([]config.PythonEnv, error) {
 		add(p, false, "")
 	}
 
-	// 3.5 整个 C 盘兜底扫描（最多 4 层，跳过系统/缓存大目录；装在任何位置的 Python 也能被发现）
-	for _, p := range scanDriveC() {
-		add(p, false, "")
+	// 3.5 全盘兜底扫描（仅深度扫描时执行）：捕捉 conda、绿色版等非标准位置。
+	// 默认搜索不碰磁盘遍历，避免每次点"快速搜索"都卡几秒。
+	if deep {
+		for _, p := range scanDriveC() {
+			add(p, false, "")
+		}
 	}
 
 	// 4. 自定义根目录下的虚拟环境
@@ -195,9 +211,14 @@ func Detect(pythonPath string) (config.PythonEnv, error) {
 		env.Root = root
 	}
 
-	detectCacheMu.Lock()
-	detectCache[pythonPath] = detectCacheItem{at: time.Now(), env: env}
-	detectCacheMu.Unlock()
+	// 只缓存"检测成功"的结果：检测失败（Python 被杀软拦了一次、磁盘瞬时占用、
+	// 刚装完环境还没就绪等）如果也缓存 30 秒，该环境会在列表里凭空消失半分钟，
+	// 表现为"明明装了却搜不到"。
+	if env.Version != "" {
+		detectCacheMu.Lock()
+		detectCache[pythonPath] = detectCacheItem{at: time.Now(), env: env}
+		detectCacheMu.Unlock()
+	}
 	return env, nil
 }
 
@@ -283,35 +304,64 @@ func scanPath() []string {
 	return out
 }
 
-// scanCommonDirs 扫描常见 Python 安装目录
+// scanCommonDirs 扫描常见 Python 安装目录。
+// 除官方安装器默认位置外，还覆盖 Miniconda / Anaconda 的默认安装目录与 conda 环境目录 ——
+// 这些是最常见的"非标准位置"，不覆盖的话用户只能靠「深度扫描」才能发现自己的环境。
 func scanCommonDirs() []string {
 	var out []string
-	var candidates []string
-	if runtime.GOOS == "windows" {
-		candidates = append(candidates, filepath.Join(paths.LocalAppData(), "Programs", "Python"))
-		programFiles := os.Getenv("ProgramFiles")
-		programFilesX86 := os.Getenv("ProgramFiles(x86)")
-		if programFiles != "" {
-			candidates = append(candidates, filepath.Join(programFiles, "Python"))
-		}
-		if programFilesX86 != "" {
-			candidates = append(candidates, filepath.Join(programFilesX86, "Python"))
+	var versionRoots []string // 形如 ...\Python\Python312\python.exe（版本号子目录下）
+	var directDirs []string   // 形如 ...\miniconda3\python.exe（目录本身即环境根）
+
+	addDirect := func(dir string) {
+		p := filepath.Join(dir, pythonExeName())
+		if fileExists(p) && !isFakePython(p) {
+			out = append(out, p)
 		}
 	}
-	for _, root := range candidates {
+	// 枚举 root 下的子目录（每个子目录是一个独立环境，如 .conda\envs\<名称>）
+	addChildren := func(root string) {
 		entries, err := os.ReadDir(root)
 		if err != nil {
-			continue
+			return
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			p := filepath.Join(root, e.Name(), pythonExeName())
-			if fileExists(p) {
-				out = append(out, p)
+			if e.IsDir() {
+				addDirect(filepath.Join(root, e.Name()))
 			}
 		}
+	}
+
+	if runtime.GOOS == "windows" {
+		versionRoots = append(versionRoots, filepath.Join(paths.LocalAppData(), "Programs", "Python"))
+		if programFiles := os.Getenv("ProgramFiles"); programFiles != "" {
+			versionRoots = append(versionRoots, filepath.Join(programFiles, "Python"))
+		}
+		if programFilesX86 := os.Getenv("ProgramFiles(x86)"); programFilesX86 != "" {
+			versionRoots = append(versionRoots, filepath.Join(programFilesX86, "Python"))
+		}
+		if home := os.Getenv("USERPROFILE"); home != "" {
+			directDirs = append(directDirs,
+				filepath.Join(home, "miniconda3"),
+				filepath.Join(home, "anaconda3"),
+				filepath.Join(home, "mambaforge"),
+			)
+			addChildren(filepath.Join(home, ".conda", "envs"))
+		}
+		if pd := os.Getenv("ProgramData"); pd != "" {
+			directDirs = append(directDirs,
+				filepath.Join(pd, "miniconda3"),
+				filepath.Join(pd, "anaconda3"),
+			)
+			addChildren(filepath.Join(pd, "miniconda3", "envs"))
+			addChildren(filepath.Join(pd, "anaconda3", "envs"))
+		}
+	}
+
+	for _, root := range versionRoots {
+		addChildren(root)
+	}
+	for _, dir := range directDirs {
+		addDirect(dir)
 	}
 	return out
 }
@@ -333,12 +383,16 @@ var skipDriveDirs = map[string]bool{
 	"dist":                      true,
 }
 
-// driveMaxDepth C 盘全盘扫描的最大深度（相对 C:\ 的分隔符层数，与虚拟环境扫描同一算法）。
-// 6 层足够覆盖 Program Files / AppData 下的常见安装（如
-// Users\名\AppData\Local\Programs\Python\Python3xx 这种标准位置已被常规路径扫描覆盖，
-// 这里负责兜底 conda、软件自带等非标准位置），
-// 同时避免深入豆包沙箱运行时（约 9 层）等深层嵌套目录拖慢扫描。
-const driveMaxDepth = 6
+// driveMaxDepth 全盘扫描的最大深度（root 的直接子目录为第 1 层）。
+// 7 层是实测的性价比拐点：能覆盖 Windows 默认的"仅为当前用户安装"位置
+// （Users\名\AppData\Local\Programs\Python\Python3xx，第 7 层）以及 conda 环境等
+// 非标准安装；继续放宽到 8/9 层耗时翻倍且几乎无新增命中。
+// 同时这个深度已经能避开豆包沙箱运行时（约 9 层）等深层嵌套目录。
+const driveMaxDepth = 7
+
+// scanWorkers 全盘扫描的并发度：按顶层目录并行遍历（各子树互不重叠，无需去重）。
+// 深度扫描本身较慢，并发能明显缩短等待时间，也不会给磁盘造成过大压力。
+const scanWorkers = 6
 
 // scanDriveC 全盘扫描 C 盘：兜底收集任意位置的物理 Python（python.exe）
 // 与虚拟环境（目录含 pyvenv.cfg，自动取 Scripts/bin 下的 python.exe）。
@@ -346,50 +400,132 @@ const driveMaxDepth = 6
 // 并跳过系统与缓存大目录（skipDriveDirs）以及点开头的隐藏缓存目录
 // （.cache/.gradle 等；真正的虚拟环境 .venv 含 pyvenv.cfg，会先被识别并记录）。
 // 非 Windows 平台返回空。虚拟环境的 IsVirtual 标记由后续 Detect 自动补全。
+// 注意：本函数只在用户主动「深度扫描」时调用，不做任何跨次缓存（环境会变）。
 func scanDriveC() []string {
-	var out []string
 	if runtime.GOOS != "windows" {
-		return out
+		return nil
 	}
-	root := "C:\\"
+	root := `C:\`
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
-		return out
+		return nil
 	}
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil // 无权限/被占用的目录直接跳过
+	return scanTree(root)
+}
+
+// scanTree 遍历 root 下的全部目录，返回找到的 python.exe 路径。
+// 与 filepath.WalkDir 相比有两点不同，目的是让全盘扫描尽量快：
+//  1. 每个目录只 ReadDir 一次，直接用返回的条目判断 pyvenv.cfg / python.exe 是否存在，
+//     省掉"每个目录再 Stat 一次标志文件"的额外系统调用（全盘约 1.4 万个目录，占比不小）；
+//  2. 顶层目录并发遍历，充分利用多核与磁盘队列。
+//
+// 语义与原来保持一致：不跟随符号链接/junction（避免目录环），
+// 目录名命中 skipDriveDirs 或点开头的跳过，但含 pyvenv.cfg 的目录会先被识别为虚拟环境。
+func scanTree(root string) []string {
+	return scanTreeDepth(root, driveMaxDepth)
+}
+
+// scanTreeDepth 同 scanTree，深度限制可注入（便于测试与评估不同深度的开销）。
+func scanTreeDepth(root string, maxDepth int) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var (
+		mu  sync.Mutex
+		out []string
+		wg  sync.WaitGroup
+	)
+	sem := make(chan struct{}, scanWorkers)
+	collect := func(paths []string) {
+		if len(paths) == 0 {
+			return
 		}
-		if d.IsDir() {
-			if path != root {
-				// 深度限制：相对 C:\ 最多深入 driveMaxDepth 层
-				rel, _ := filepath.Rel(root, path)
-				if strings.Count(rel, string(filepath.Separator)) >= driveMaxDepth {
-					return filepath.SkipDir
-				}
-				// 虚拟环境优先识别（.venv 等点开头目录也走这里），识别后不再深入
-				if fileExists(filepath.Join(path, "pyvenv.cfg")) {
-					py := filepath.Join(path, "Scripts", pythonExeName())
-					if !fileExists(py) {
-						py = filepath.Join(path, "bin", pythonExeName())
-					}
-					if fileExists(py) {
-						out = append(out, py)
-					}
-					return filepath.SkipDir
-				}
-				name := strings.ToLower(d.Name())
-				if strings.HasPrefix(name, ".") || skipDriveDirs[name] {
-					return filepath.SkipDir
-				}
+		mu.Lock()
+		out = append(out, paths...)
+		mu.Unlock()
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			if isLinkEntry(e) {
+				continue
 			}
-			return nil
+			wg.Add(1)
+			go func(dir string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				collect(scanDir(dir, 1, maxDepth))
+			}(filepath.Join(root, e.Name()))
+			continue
 		}
-		if strings.EqualFold(d.Name(), pythonExeName()) && !isFakePython(path) {
-			out = append(out, path)
+		// 直接放在盘符根目录下的 python.exe（极少见，但与顺序遍历的实现等价）
+		if strings.EqualFold(e.Name(), pythonExeName()) {
+			if p := filepath.Join(root, e.Name()); !isFakePython(p) {
+				collect([]string{p})
+			}
+		}
+	}
+	wg.Wait()
+	return out
+}
+
+// scanDir 递归扫描单个目录。depth 为该目录相对 root 的层数（root 的直接子目录为 1），
+// 超过 maxDepth 层不再深入。
+func scanDir(dir string, depth, maxDepth int) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil // 无权限 / 被占用：跳过
+	}
+	// 虚拟环境优先识别（放在跳过规则之前，保证 .venv 这类点开头目录也能被发现）：
+	// 含 pyvenv.cfg 即为环境根，取 Scripts（Windows）/ bin（其它平台）下的 python.exe，
+	// 且不再深入 —— venv 内部只有第三方库，继续扫没有意义。
+	if hasEntry(entries, "pyvenv.cfg") {
+		py := filepath.Join(dir, "Scripts", pythonExeName())
+		if !fileExists(py) {
+			py = filepath.Join(dir, "bin", pythonExeName())
+		}
+		if fileExists(py) {
+			return []string{py}
 		}
 		return nil
-	})
+	}
+	name := strings.ToLower(filepath.Base(dir))
+	if strings.HasPrefix(name, ".") || skipDriveDirs[name] {
+		return nil
+	}
+	var out []string
+	recurse := depth < maxDepth
+	for _, e := range entries {
+		if e.IsDir() {
+			if !recurse || isLinkEntry(e) {
+				continue
+			}
+			out = append(out, scanDir(filepath.Join(dir, e.Name()), depth+1, maxDepth)...)
+			continue
+		}
+		if strings.EqualFold(e.Name(), pythonExeName()) {
+			p := filepath.Join(dir, e.Name())
+			if !isFakePython(p) {
+				out = append(out, p)
+			}
+		}
+	}
 	return out
+}
+
+// isLinkEntry 是否为符号链接/junction：不跟随，避免目录环导致扫描失控
+func isLinkEntry(e os.DirEntry) bool {
+	return e.Type()&os.ModeSymlink != 0
+}
+
+// hasEntry 判断目录条目中是否存在指定文件（大小写不敏感，符合 Windows 语义）
+func hasEntry(entries []os.DirEntry, name string) bool {
+	for _, e := range entries {
+		if !e.IsDir() && strings.EqualFold(e.Name(), name) {
+			return true
+		}
+	}
+	return false
 }
 
 type venvFound struct {

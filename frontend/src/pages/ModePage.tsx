@@ -15,7 +15,7 @@ const ENC_INFO: Record<string, { title: string; desc: string }> = {
   },
   deep: {
     title: '深度加密',
-    desc: '在基础加密之上叠加 JIT 动态指令保护、函数调用校验、属性访问保护，防破解能力更强，适合商业分发（体积略增、启动略慢）。',
+    desc: '在基础加密之上叠加 JIT 动态指令保护（PyArmor 的 --enable-jit），防动态调试能力更强，适合商业分发（体积略增、启动略慢）。不含调用校验/属性保护等 restrict 选项——它们会与 PySide6/PyQt 冲突导致产物无法运行。',
   },
 }
 

@@ -195,12 +195,17 @@ def main(entry, workpath):
     CONF['code_cache'] = dict()
     os.makedirs(CONF['workpath'], exist_ok=True)
     os.makedirs(CONF['distpath'], exist_ok=True)
+    # 上次的分析结果是否存在（PyInstaller 会复用 build 目录下的 Analysis-00.toc）
+    toc_file = os.path.join(CONF['workpath'], 'Analysis-00.toc')
+    had_cache = os.path.isfile(toc_file)
 
     a = Analysis([entry], pathex=[base_dir], binaries=[], datas=[],
                  hiddenimports=[], hookspath=[], runtime_hooks=[],
                  excludes=[], noarchive=False)
     dt = time.time() - t0
-    is_cached = dt < 3.0  # 命中 PyInstaller 缓存时通常 1 秒内返回
+    # 只有"上次结果存在 + 本次很快返回"才算命中缓存；
+    # 单看耗时会把小型项目的首次分析（引擎加载本身也要几秒）误标成命中
+    is_cached = had_cache and dt < 3.0
 
     # ---------- 2. 已收集模块集合 ----------
     # 注意：analysisModules 只使用纯 Python 模块（pure）的模块名；
@@ -300,7 +305,16 @@ def main(entry, workpath):
         scan(f)
 
     # ---------- 4. 包名映射 ----------
-    installed_dists = {d.metadata["Name"].lower() for d in importlib.metadata.distributions()}
+    # 注意：个别发行版的元数据缺失 Name（打包不规范），直接 d.metadata["Name"].lower()
+    # 会抛 AttributeError 让整个分析崩掉，这里逐个兜底跳过。
+    installed_dists = set()
+    for d in importlib.metadata.distributions():
+        try:
+            name = (d.metadata.get('Name') or '').strip().lower()
+        except Exception:
+            continue
+        if name:
+            installed_dists.add(name)
     pkgs_map = {}
     try:
         pkgs_map = importlib.metadata.packages_distributions()
@@ -557,7 +571,7 @@ func Analyze(entryScript, pythonPath string, onProgress func(string)) (*config.D
 	var mu sync.Mutex
 	readPipe := func(rc io.ReadCloser, isErr bool) {
 		sc := bufio.NewScanner(rc)
-		sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		for sc.Scan() {
 			line := strings.TrimSpace(sc.Text())
 			if line == "" {
@@ -579,9 +593,14 @@ func Analyze(entryScript, pythonPath string, onProgress func(string)) (*config.D
 			}
 		}
 	}
-	go readPipe(stdout, false)
-	go readPipe(stderr, true)
+	var readers sync.WaitGroup
+	readers.Add(2)
+	go func() { defer readers.Done(); readPipe(stdout, false) }()
+	go func() { defer readers.Done(); readPipe(stderr, true) }()
 
+	// 必须先等两个读取协程读完再 Wait：Wait 会关闭管道，先 Wait 有可能
+	// 丢掉最后一行 JSON，表现为偶发的"依赖分析未产生结果"。
+	readers.Wait()
 	err = cmd.Wait()
 	if err != nil {
 		mu.Lock()

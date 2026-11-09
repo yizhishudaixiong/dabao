@@ -54,6 +54,11 @@
     @apply w-full h-9 rounded-field bg-base border border-line px-3 text-sm text-ink
       placeholder:text-ink-faint outline-none transition-colors
       focus:border-accent/70 focus:shadow-glow;
+    /* 允许在输入框里选中/复制文本：body 的全局 select-none 会连带影响输入框，
+       而路径框是 readOnly 的，选不中也改不了，用户就没法把路径复制出去。
+       同时放开右键菜单（Wails 默认屏蔽只读输入框的右键菜单）。 */
+    user-select: text;
+    --default-contextmenu: show;
   }
   .label {
     @apply block text-xs font-medium text-ink-soft mb-1.5;
@@ -95,10 +100,10 @@
   }
 }
 
-/* 拖拽投放区：Wails 按 CSS 属性判断"哪里可以接收拖入的文件"。
-   注意：v2.15 运行时实际读取 --wails-ln（官方文档注释的 --wails-drop-target 已过时），
-   这里同时设置两个，保证任何版本都能识别；只有带该类的区域拖拽才触发，实现"页面级"拖拽 */
+/* 拖拽投放区：Wails 通过 CSS 自定义属性判断"哪里可以接收拖入的文件"。
+   属性名与取值以 Wails 运行时为准：--wails-drop-target: drop
+   （见 wails/v2/internal/frontend/runtime/desktop/main.js 的 cssDropProperty/cssDropValue）。
+   只有带该类的区域拖拽才触发，实现"页面级"拖拽。 */
 .drop-zone {
-  --wails-ln: drop;
   --wails-drop-target: drop;
 }

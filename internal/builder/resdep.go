@@ -84,7 +84,9 @@ func AnalyzeResourceDeps(pythonPath, entryScript string, resources []config.Reso
 			Line:       s.Line,
 			Code:       s.Code,
 		}
-		key := d.SourceFile + "|" + strconv.Itoa(d.Line) + "|" + d.Ref
+		// 去重键必须带上原始引用（s.Ref）：同一行可能引用多个资源
+		// （如 os.path.join('a.txt', 'b.txt')），只用"文件+行号"会误删后面的引用
+		key := s.File + "|" + strconv.Itoa(s.Line) + "|" + s.Ref
 		if seen[key] {
 			continue
 		}

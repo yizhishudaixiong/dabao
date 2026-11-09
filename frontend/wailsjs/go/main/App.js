@@ -110,30 +110,34 @@ export function SearchEnvironments(arg1) {
   return ObfuscatedCall(26, [arg1]);
 }
 
-export function SelectCustomPython() {
-  return ObfuscatedCall(27, []);
+export function SearchEnvironmentsDeep(arg1) {
+  return ObfuscatedCall(27, [arg1]);
 }
 
-export function SelectCustomRoot() {
+export function SelectCustomPython() {
   return ObfuscatedCall(28, []);
 }
 
-export function SelectEntryScript() {
+export function SelectCustomRoot() {
   return ObfuscatedCall(29, []);
 }
 
-export function SelectIcon() {
+export function SelectEntryScript() {
   return ObfuscatedCall(30, []);
 }
 
-export function SelectOutputDir() {
+export function SelectIcon() {
   return ObfuscatedCall(31, []);
 }
 
-export function SelectResourceDir() {
+export function SelectOutputDir() {
   return ObfuscatedCall(32, []);
 }
 
-export function SelectResourceFile() {
+export function SelectResourceDir() {
   return ObfuscatedCall(33, []);
+}
+
+export function SelectResourceFile() {
+  return ObfuscatedCall(34, []);
 }

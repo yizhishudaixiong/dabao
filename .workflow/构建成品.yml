@@ -35,8 +35,13 @@ stages:
     - export PATH=/opt/node/bin:$PATH
     - node -v
     - npm -v
+    - echo "== 同步版本号到 info.json =="
+    - "VER=$(grep -oP 'Version\\s*=\\s*\"\\K[^\"]+' internal/version/version.go)"
+    - 'if [ -z "$VER" ]; then echo "无法从 version.go 读取版本号"; exit 1; fi'
+    - 'sed -i -E "s/(\"file_version\": \")[^"]*\"/\1${VER}.0\"/; s/(\"product_version\": \")[^"]*\"/\1${VER}.0\"/; s/(\"FileVersion\": \")[^"]*\"/\1${VER}.0\"/; s/(\"ProductVersion\": \")[^"]*\"/\1${VER}.0\"/" build/windows/info.json'
+    - cat build/windows/info.json
     - echo "== 构建 Windows exe（混淆版）=="
-    - wails build -platform windows/amd64 -obfuscated -garbleargs "-tiny -seed=random"
+    - wails build -platform windows/amd64 -obfuscated -trimpath -ldflags "-s -w" -garbleargs "-tiny -seed=random"
     - ls -la build/bin
     - echo "== 发布到码云 Releases =="
     - "VERSION=$(grep -oP 'Version\\s*=\\s*\"\\K[^\"]+' internal/version/version.go)"

@@ -20,8 +20,8 @@ func BuildArgs(cfg *config.BuildConfig, workspace, entryScript string, extraData
 	if entryScript == "" {
 		return nil, fmt.Errorf("请先选择 Python 入口脚本")
 	}
-	if cfg.Name == "" {
-		return nil, fmt.Errorf("请填写程序名称")
+	if err := validateAppName(cfg.Name); err != nil {
+		return nil, err
 	}
 	if cfg.PythonPath == "" {
 		return nil, fmt.Errorf("请先选择 Python 环境")
@@ -314,6 +314,38 @@ func isToolPkg(pkg string) bool {
 		return true
 	}
 	return strings.HasPrefix(p, "pyinstaller") || strings.HasPrefix(p, "pyarmor")
+}
+
+// validateAppName 校验程序名称能否安全地作为 Windows 文件名使用。
+// 该名称会参与 PyInstaller 的 --name、产物文件名，以及输出目录的路径拼接
+// （filepath.Join(outputDir, cfg.Name+".exe")），含路径分隔符或 ".." 时
+// 产物可能被写到用户选择的输出目录之外，因此必须在打包前挡掉。
+func validateAppName(name string) error {
+	if name == "" {
+		return fmt.Errorf("请填写程序名称")
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("程序名称首尾不能包含空格")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("程序名称无效：%q", name)
+	}
+	if strings.ContainsAny(name, `\/:*?"<>|`) {
+		return fmt.Errorf("程序名称不能包含 \\ / : * ? \" < > | 这些字符")
+	}
+	for _, r := range name {
+		if r < 0x20 {
+			return fmt.Errorf("程序名称不能包含控制字符")
+		}
+	}
+	// Windows 保留设备名不能作为文件名（CON.txt 同样不允许）
+	switch strings.ToUpper(strings.TrimSuffix(name, filepath.Ext(name))) {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return fmt.Errorf("程序名称不能使用 Windows 保留名：%s", name)
+	}
+	return nil
 }
 
 // validateContentsDir 校验多文件模式的自定义依赖文件夹名称：

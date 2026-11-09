@@ -5,6 +5,7 @@ import { BrowserOpenURL, OnFileDrop, OnFileDropOff, Quit } from '../wailsjs/runt
 import icon from './assets/icon.png'
 import { APP_POST_URL, APP_REPO_URL } from './constants'
 import { baseName, dirOf } from './lib/path'
+import { useLogBuffer } from './lib/useLogs'
 import EnvPage from './pages/EnvPage'
 import ConfigPage from './pages/ConfigPage'
 import ModePage from './pages/ModePage'
@@ -55,7 +56,9 @@ function defaultCfg(): BuildConfig {
     useUPX: false,
     excludeModules: [],
     pythonPath: '',
-    pipMirror: '',
+    // 界面默认选中「阿里源」，配置里必须是同一个地址：否则界面显示阿里源、
+    // 实际却按官方源安装（空串 = 官方源），国内网络下会莫名超时
+    pipMirror: 'https://mirrors.aliyun.com/pypi/simple/',
     extraArgs: [],
     cacheAccel: true,
     uacAdmin: false,
@@ -67,14 +70,19 @@ export default function App() {
   const [cfg, setCfg] = useState<BuildConfig>(defaultCfg)
   const [envs, setEnvs] = useState<PythonEnv[]>([])
   const [selected, setSelected] = useState<PythonEnv | null>(null)
+  // 环境页的自定义根目录与"已搜索"标记提到 App：EnvPage 是条件渲染，
+  // 组件一卸载这些局部状态就清空，切到第 2 步再回来输入框会变空、空环境引导卡也会消失
+  const [envRoot, setEnvRoot] = useState('')
+  const [envSearched, setEnvSearched] = useState(false)
 
   const [deps, setDeps] = useState<DepsResult | null>(null)
-  const [buildLogs, setBuildLogs] = useState<string[]>([])
-  const [depsLogs, setDepsLogs] = useState<string[]>([])
+  // 三类日志各自用缓冲（同一帧内的多行合并成一次更新，避免几千行输出把界面拖慢）
+  const build = useLogBuffer()
+  const depsLog = useLogBuffer()
   // 依赖安装进度（后端 deps:progress 事件推送）
   const [depsProgress, setDepsProgress] = useState<{ percent: number; stage: string } | null>(null)
   // 依赖分析引擎的实时日志（PyInstaller 官方分析）
-  const [analysisLogs, setAnalysisLogs] = useState<string[]>([])
+  const analysisLog = useLogBuffer()
   const [done, setDone] = useState<BuildDonePayload | null>(null)
   // 程序内部版本号（后端 GetVersion 返回，唯一版本来源在 internal/version）
   const [appVersion, setAppVersion] = useState('')
@@ -291,22 +299,20 @@ export default function App() {
         }
         setCfg((prev) => ({ ...prev, ...fixed }))
         if (c.pythonPath) {
-          window.go.main.App.SearchEnvironments('')
-            .then((envs) => {
+          // 启动时不做任何环境搜索（搜索会遍历磁盘，没必要每次开机都跑一遍）：
+          // 只按记忆里的路径检测一次，把上次用的环境还原出来。
+          // 其余环境等用户进入环境页点「快速搜索」时再加载。
+          window.go.main.App.DetectPythonPath(c.pythonPath)
+            .then((e) => {
               if (!alive) return
-              const hit = envs.find((e) => e.path === c.pythonPath)
-              if (hit) {
-                setSelected(hit)
-              } else {
-                // 自动搜索找不到（例如自定义根目录下的环境）：按路径直接检测还原
-                window.go.main.App.DetectPythonPath(c.pythonPath)
-                  .then((e) => {
-                    if (alive) setSelected(e)
-                  })
-                  .catch(() => {})
-              }
+              setSelected(e)
+              // 同时塞进列表：否则下拉框的当前值不在选项里，会显示成空白
+              setEnvs((prev) => (prev.some((x) => x.path === e.path) ? prev : [e, ...prev]))
             })
-            .catch(() => {})
+            .catch(() => {
+              // 环境已被删除/移动：清掉记忆里的路径，避免后续拿着无效路径去分析/打包
+              if (alive) updateCfg({ pythonPath: '' })
+            })
         }
       })
       .catch(() => {})
@@ -409,12 +415,8 @@ export default function App() {
 
   // 监听后端事件
   useEffect(() => {
-    const offBuildLog = window.runtime.EventsOn('build:log', (d) =>
-      setBuildLogs((l) => [...l, String(d)]),
-    )
-    const offDepsLog = window.runtime.EventsOn('deps:log', (d) =>
-      setDepsLogs((l) => [...l, String(d)]),
-    )
+    const offBuildLog = window.runtime.EventsOn('build:log', (d) => build.push(String(d)))
+    const offDepsLog = window.runtime.EventsOn('deps:log', (d) => depsLog.push(String(d)))
     const offDepsProgress = window.runtime.EventsOn('deps:progress', (d) => {
       const p = d as { percent?: number; stage?: string }
       if (typeof p === 'object' && p !== null) {
@@ -423,7 +425,7 @@ export default function App() {
     })
     // 依赖分析引擎的实时日志（PyInstaller 官方分析），独立通道避免混入安装日志
     const offDepsAnalysis = window.runtime.EventsOn('deps:analysis-log', (d) =>
-      setAnalysisLogs((l) => [...l, String(d)]),
+      analysisLog.push(String(d)),
     )
     const offDone = window.runtime.EventsOn('build:done', (d) => {
       const payload = d as BuildDonePayload
@@ -465,13 +467,13 @@ export default function App() {
   }
 
   const startBuild = async () => {
-    setBuildLogs([])
+    build.clear()
     setDone(null)
     setBuilding(true)
     try {
       await window.go.main.App.Build(cfg)
     } catch (e) {
-      setBuildLogs((l) => [...l, String(e)])
+      build.push(String(e))
       setBuilding(false)
     }
   }
@@ -509,7 +511,7 @@ export default function App() {
             <div className="mt-5 space-y-2 text-sm leading-relaxed text-ink-soft">
               <p>版本：{appVersion}</p>
               <p>
-                一款面向 Python 新手的图形化打包工具：自动搜索 / 下载 Python 环境、
+                一款面向 Python 新手的图形化打包工具：快速搜索 / 深度扫描 / 下载 Python 环境、
                 自动分析并安装依赖、一键打包成 EXE。
               </p>
               <p>
@@ -606,6 +608,10 @@ export default function App() {
             setEnvs={setEnvs}
             selected={selected}
             setSelected={setSelected}
+            root={envRoot}
+            setRoot={setEnvRoot}
+            searched={envSearched}
+            setSearched={setEnvSearched}
             downloading={portableDl}
             setDownloading={setDownloading}
           />
@@ -625,10 +631,11 @@ export default function App() {
             updateCfg={updateCfg}
             deps={deps}
             setDeps={setDeps}
-            depsLogs={depsLogs}
+            depsLogs={depsLog.lines}
             depsProgress={depsProgress}
-            analysisLogs={analysisLogs}
-            setAnalysisLogs={setAnalysisLogs}
+            analysisLogs={analysisLog.lines}
+            pushAnalysisLog={analysisLog.push}
+            clearAnalysisLog={analysisLog.clear}
             installing={installing}
             setInstalling={setInstalling}
             analyzing={analyzing}
@@ -639,7 +646,7 @@ export default function App() {
         {step === 4 && (
           <BuildPage
             cfg={cfg}
-            logs={buildLogs}
+            logs={build.lines}
             done={done}
             building={building}
             soundEnabled={soundEnabled}

@@ -3,6 +3,7 @@
 package builder
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
 	"os"
@@ -46,9 +47,11 @@ func EnsureUPX() (string, error) {
 			return
 		}
 		exe := filepath.Join(dir, "upx.exe")
-		// 已存在且内容一致则直接复用（避免每次重复写盘）
+		// 已存在且内容一致则直接复用（避免每次重复写盘）。
+		// 必须逐字节比对：只比长度的话，长度相同但内容损坏的文件会被当成"已释放"复用，
+		// 后续每次 UPX 压缩都会失败，且很难排查。
 		if data, err := os.ReadFile(exe); err == nil && len(data) > 0 {
-			if in, ierr := upxFS.ReadFile("upx/upx.exe"); ierr == nil && len(data) == len(in) {
+			if in, ierr := upxFS.ReadFile("upx/upx.exe"); ierr == nil && bytes.Equal(data, in) {
 				upxDir = dir
 				return
 			}

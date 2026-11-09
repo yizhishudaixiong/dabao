@@ -33,9 +33,15 @@ export default function ConfigPage({
             placeholder="如 MyApp"
             value={cfg.name}
             onChange={(e) => updateCfg({ name: e.target.value })}
+            // 失焦时去掉首尾空格：名称会作为 exe 文件名，后端会拒绝首尾带空格的名字，
+            // 在输入框里悄悄帮忙去掉比让用户打包时才看到报错更友好
+            onBlur={(e) => {
+              const v = e.target.value.trim()
+              if (v !== cfg.name) updateCfg({ name: v })
+            }}
           />
           <TextInput
-            label="版本 *"
+            label="版本"
             placeholder="如 1.0.0"
             value={cfg.version}
             onChange={(e) => updateCfg({ version: e.target.value })}
@@ -77,6 +83,7 @@ export default function ConfigPage({
 
       <Card title="输出位置" desc="打包完成后的最终产物将保存到此处">
         <PathField
+          label="输出目录 *"
           placeholder="选择最终 EXE 的输出目录"
           value={cfg.outputDir}
           onPick={pickOutput}

@@ -27,3 +27,6 @@ frontend/.vite/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# ===== 工作区记忆（本地笔记，不随代码提交） =====
+.workbuddy/

@@ -50,6 +50,9 @@ export default function BuildPage({
   // 打包命令预览
   const [showCmd, setShowCmd] = useState(false)
   const [cmd, setCmd] = useState('')
+  // 生成命令时的配置指纹：配置改了就说明面板里的命令已过期，必须提示重新生成，
+  // 否则用户会照着旧命令核对（或复制走），得到一个跟实际打包不一致的结果
+  const [cmdKey, setCmdKey] = useState('')
   const [cmdLoading, setCmdLoading] = useState(false)
   const [cmdCopied, setCmdCopied] = useState(false)
   // 打包缓存加速折叠面板：始终默认关闭，点击按钮才展开
@@ -76,19 +79,26 @@ export default function BuildPage({
     }
   }, [cfg.pythonPath])
 
+  // 当前配置的指纹（用于判断预览命令是否已过期）
+  const cfgKey = useMemo(() => JSON.stringify(cfg), [cfg])
+  const cmdStale = !!cmd && cmdKey !== cfgKey
+
   // 生成并展示将要执行的 PyInstaller 完整命令
   const previewCmd = async () => {
-    if (cmd) {
+    // 只有"命令仍然对应当前配置"时才当作展开/收起；配置已改则重新生成
+    if (cmd && cmdKey === cfgKey) {
       setShowCmd((v) => !v)
       return
     }
     setCmdLoading(true)
     try {
-      const s = await window.go.main.App.PreviewCommand(cfg)
-      setCmd(s)
+      const text = await window.go.main.App.PreviewCommand(cfg)
+      setCmd(text)
+      setCmdKey(cfgKey)
       setShowCmd(true)
     } catch (e) {
       setCmd('生成命令失败：' + String(e))
+      setCmdKey(cfgKey)
       setShowCmd(true)
     } finally {
       setCmdLoading(false)
@@ -127,15 +137,15 @@ export default function BuildPage({
     }
   }, [logs])
 
-  // 计时器：打包期间每秒 +1
+  // 计时器：打包期间每秒 +1。
+  // 归零放在"开始打包"而不是"结束打包"：否则打包一结束用时立刻变 00:00，
+  // 完成卡片上就看不到这次构建到底花了多久。
   useEffect(() => {
-    if (!building) {
-      setElapsed(0)
-      setStageIdx(0)
-      lastStage.current = -1
-      stageLineCount.current = 0
-      return
-    }
+    if (!building) return
+    setElapsed(0)
+    setStageIdx(0)
+    lastStage.current = -1
+    stageLineCount.current = 0
     const t = setInterval(() => setElapsed((e) => e + 1), 1000)
     return () => clearInterval(t)
   }, [building])
@@ -208,7 +218,13 @@ export default function BuildPage({
         {/* 高级选项折叠按钮：与打包模式页「代码加密 / UPX 压缩」样式统一（ghost + emoji + 展开收起） */}
         <div className="mt-4 flex flex-wrap gap-2">
           <Button variant="ghost" onClick={previewCmd} disabled={cmdLoading}>
-            {cmdLoading ? '⏳ 生成中…' : showCmd ? '▾ 收起打包命令' : '📋 查看打包命令'}
+            {cmdLoading
+              ? '⏳ 生成中…'
+              : showCmd && !cmdStale
+                ? '▾ 收起打包命令'
+                : cmdStale
+                  ? '🔄 重新生成打包命令'
+                  : '📋 查看打包命令'}
           </Button>
           <Button variant="ghost" onClick={() => setShowCacheAccel((v) => !v)}>
             {showCacheAccel ? '▾ 收起打包缓存加速' : '⚡ 打包缓存加速'}
@@ -217,6 +233,11 @@ export default function BuildPage({
 
         {showCmd && cmd && (
           <div className="mt-3 rounded-panel border border-line bg-base p-3">
+            {cmdStale && (
+              <p className="mb-2 rounded-field border border-warn/40 bg-warn/15 px-2.5 py-1.5 text-[11px] leading-relaxed text-warn">
+                配置已修改，下面这条命令是旧配置生成的，请点「重新生成打包命令」后再核对/复制。
+              </p>
+            )}
             <pre className="max-h-44 select-text overflow-auto whitespace-pre-wrap break-all text-xs leading-relaxed text-ink-soft">
               {cmd}
             </pre>
@@ -268,16 +289,20 @@ export default function BuildPage({
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-ink">
-              {building ? STAGES[stageIdx].label : '尚未开始'}
+              {building ? STAGES[stageIdx].label : done ? (done.success ? '已完成' : '已结束') : '尚未开始'}
             </span>
             <span className="text-sm text-ink-faint">
-              {building ? `${percent}% · 已用时 ${fmtTime(elapsed)}` : '点击「开始打包」后自动更新'}
+              {building
+                ? `${percent}% · 已用时 ${fmtTime(elapsed)}`
+                : done?.success
+                  ? `100% · 用时 ${fmtTime(elapsed)}`
+                  : '点击「开始打包」后自动更新'}
             </span>
           </div>
           <div className="h-4 w-full overflow-hidden rounded-full bg-line">
             <div
               className="progress-animated h-full rounded-full bg-good transition-all duration-500"
-              style={{ width: `${building ? percent : 0}%` }}
+              style={{ width: `${building ? percent : done?.success ? 100 : 0}%` }}
             />
           </div>
           {building && (

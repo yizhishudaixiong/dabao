@@ -26,6 +26,7 @@ type App struct {
 	cancelBuild    chan struct{}
 	cancelDeps     chan struct{}      // 依赖安装取消通道（强制停止安装用）
 	cancelPortable context.CancelFunc // 便携版下载取消（context 驱动，点取消立即中断连接）
+	portableSeq    int                // 便携版下载序号：只有"当前这一轮"结束时才能清空取消函数（func 不可比较）
 	exitConfirmed  bool               // 用户已确认在忙碌状态下退出（避免重复弹确认框）
 	activeTasks    int                // 统一忙碌计数：打包/安装/依赖分析/资源分析/便携版下载共用（IsBusy 只看它）
 }
@@ -61,22 +62,40 @@ func (a *App) GetVersion() string {
 
 // ---- 环境搜索与选择 ----
 
-// SearchEnvironments 自动搜索所有可用 Python 环境（环境变量 + 自定义环境根目录下的虚拟环境），
-// 并合并已下载的"内置便携版 Python"（带标识，可像普通环境一样使用）
+// SearchEnvironments 快速搜索所有可用 Python 环境（不遍历磁盘，通常 1 秒内返回）。
+// 数据来源：环境变量 + Python 启动器 + 常见安装目录（含 conda）+ 自定义环境根目录下的虚拟环境。
 func (a *App) SearchEnvironments(customRoot string) []config.PythonEnv {
-	envs, err := env.Search(customRoot)
+	return a.searchEnvironments(customRoot, false)
+}
+
+// SearchEnvironmentsDeep 在快速搜索的基础上实时遍历整个 C 盘，捕捉 conda、绿色版等
+// 非标准位置的 Python。较慢（数秒到数十秒），只在用户点「深度扫描」时调用；
+// 不做跨次缓存，每次都是实时结果（装了/删了/移动了立刻反映）。
+func (a *App) SearchEnvironmentsDeep(customRoot string) []config.PythonEnv {
+	return a.searchEnvironments(customRoot, true)
+}
+
+// searchEnvironments 搜索环境并合并已下载的"内置便携版 Python"
+// （带标识，可像普通环境一样使用）。
+func (a *App) searchEnvironments(customRoot string, deep bool) []config.PythonEnv {
+	var envs []config.PythonEnv
+	var err error
+	if deep {
+		envs, err = env.SearchDeep(customRoot)
+	} else {
+		envs, err = env.Search(customRoot)
+	}
 	if err != nil {
 		envs = []config.PythonEnv{}
 	}
 	// 合并便携版：标记 IsPortable + 自带 pip（python-build-standalone 内置 pip 25.x）
 	for _, p := range portable.List() {
 		e := config.PythonEnv{
-			Path:       p.Path,
-			Version:    p.Version,
-			HasPip:     true,
-			IsPortable: true,
+			Path:    p.Path,
+			Version: p.Version,
+			HasPip:  true,
 		}
-		e.Name = "内置便携版 · Python " + p.Version + " · " + p.Path
+		decorateEnv(&e) // 统一在这里打 IsPortable 标记并生成展示名
 		envs = append(envs, e)
 	}
 	return envs
@@ -96,7 +115,7 @@ func (a *App) GetPortableRootDir() string {
 
 // GetPortablePythons 列出已下载的便携版（版本 / 路径 / 占用大小）
 func (a *App) GetPortablePythons() []portable.PortablePython {
-	return portable.List()
+	return portable.ListWithSize()
 }
 
 // DownloadPortablePython 开始异步下载指定版本的便携版 Python。
@@ -109,6 +128,8 @@ func (a *App) DownloadPortablePython(version string) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancelPortable = cancel
+	a.portableSeq++
+	seq := a.portableSeq
 	a.mu.Unlock()
 
 	go func() {
@@ -116,7 +137,11 @@ func (a *App) DownloadPortablePython(version string) error {
 		defer a.markIdle()
 		defer func() {
 			a.mu.Lock()
-			a.cancelPortable = nil
+			// 只清空本轮自己的取消函数：若用户已经开始下载下一个版本，
+			// 这里把新任务的 cancel 设成 nil 会让"取消下载"彻底失效
+			if a.portableSeq == seq {
+				a.cancelPortable = nil
+			}
 			a.mu.Unlock()
 		}()
 		emit := func(evt string, data interface{}) {
@@ -128,6 +153,9 @@ func (a *App) DownloadPortablePython(version string) error {
 				pct := 0
 				if total > 0 {
 					pct = int(done * 100 / total)
+					if pct > 100 {
+						pct = 100 // 兜底：任何情况下不给出 >100% 的进度
+					}
 				}
 				emit("portable:progress", map[string]interface{}{
 					"percent":   pct,
@@ -185,8 +213,31 @@ func (a *App) SelectCustomPython() (*config.PythonEnv, error) {
 	if err != nil {
 		return nil, fmt.Errorf("无法识别的 Python 环境: %v", err)
 	}
-	e.Name = env.DisplayName(&e)
+	decorateEnv(&e)
 	return &e, nil
+}
+
+// decorateEnv 补全环境的展示信息：标记内置便携版 + 生成展示名。
+// 便携版判断靠路径归属（%LOCALAPPDATA%\dabao\runtime 下），
+// 否则按路径还原/手动选择时会被显示成"物理环境"，丢失便携版标识。
+func decorateEnv(e *config.PythonEnv) {
+	if withinDir(e.Path, portable.RootDir()) {
+		e.IsPortable = true
+	}
+	e.Name = env.DisplayName(e)
+}
+
+// withinDir 判断 path 是否位于 dir 之内（按路径层级，不做字符串前缀匹配）
+func withinDir(path, dir string) bool {
+	if path == "" || dir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !filepath.IsAbs(rel) &&
+		!strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // SelectEntryScript 选择打包入口 .py 文件
@@ -490,7 +541,11 @@ func (a *App) doBuild(cfg config.BuildConfig, cancel chan struct{}) {
 	defer func() {
 		a.markIdle()
 		a.mu.Lock()
-		a.cancelBuild = nil
+		// 只在仍是本次任务的通道时清空：旧任务收尾若无条件置 nil，
+		// 会把用户刚启动的新任务取消通道抹掉，新任务点「取消」就没反应了
+		if a.cancelBuild == cancel {
+			a.cancelBuild = nil
+		}
 		a.mu.Unlock()
 	}()
 	a.markBusy()
@@ -603,7 +658,18 @@ func (a *App) SaveAutoConfig(cfg config.BuildConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(paths.ConfigFilePath(), data, 0o644)
+	// 原子写：配置是随改随存的（防抖 600ms），直接覆盖时若正好退出/断电，
+	// 会留下半个 JSON，下次启动只能当作"没有记忆"、设置全丢。
+	final := paths.ConfigFilePath()
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // DeleteAutoConfig 关闭记忆功能时删除自动记忆文件（config.json）。
@@ -648,14 +714,14 @@ func normalizeConfig(c *config.BuildConfig) {
 }
 
 // DetectPythonPath 直接检测一个 python.exe 路径并返回环境信息。
-// 用于还原自动记忆的环境：当自动搜索（不含自定义根目录）找不到该环境时，
+// 用于还原自动记忆的环境：当快速搜索（不含自定义根目录）找不到该环境时，
 // 按路径直接检测，保证"记住的 Python"一定能还原并继续打包。
 func (a *App) DetectPythonPath(path string) (config.PythonEnv, error) {
 	e, err := env.Detect(path)
 	if err != nil {
 		return config.PythonEnv{}, fmt.Errorf("无法识别的 Python 环境: %v", err)
 	}
-	e.Name = env.DisplayName(&e)
+	decorateEnv(&e)
 	return e, nil
 }
 
@@ -681,7 +747,8 @@ func (a *App) PreviewCommand(cfg config.BuildConfig) (string, error) {
 	// 首行：Python 环境（带物理/虚拟标识，便于确认用的是哪个环境）
 	envInfo := cfg.PythonPath
 	if detected, err := env.Detect(cfg.PythonPath); err == nil {
-		envInfo = env.DisplayName(&detected)
+		decorateEnv(&detected)
+		envInfo = detected.Name
 	}
 	sb.WriteString("# Python 环境：" + envInfo)
 	// 图标信息（便于用户核对打包时用的是哪个图标）

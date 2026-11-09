@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,8 +101,10 @@ func (w *Workspace) Run(cfg *config.BuildConfig, onLog func(string), cancel <-ch
 		}()
 	}
 
-	err = cmd.Wait()
+	// 必须先读完输出再 Wait：Wait 会关闭管道，先 Wait 可能丢掉最后几行，
+	// 而报错现场恰好就在末尾（诊断要靠它）。管道 EOF 在进程退出后自然到达。
 	<-done
+	err = cmd.Wait()
 
 	if err != nil {
 		// Windows 下杀进程可能报 "signal: killed"，视为取消而非失败
@@ -251,15 +254,27 @@ func isWithin(child, parent string) bool {
 	return rel == "." || (rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
+// copyFile 流式复制文件。
+// 不能用 os.ReadFile + os.WriteFile：单文件模式遇到 PyTorch 这类项目，产物可达 1~2 GB，
+// 整体读进内存会直接把内存打爆。io.Copy 走 32KB 缓冲，内存占用恒定。
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
+	defer in.Close()
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o644)
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func copyDir(src, dst string) error {
@@ -276,26 +291,21 @@ func copyDir(src, dst string) error {
 	})
 }
 
+// joinArgs 把参数拼成可直接粘贴到命令行的字符串：
+// 只有含空格/引号的参数才加引号（命令与路径都适用），避免把每个 -flag 都包起来
 func joinArgs(args []string) string {
-	out := ""
-	for _, a := range args {
-		if out != "" {
-			out += " "
+	var b strings.Builder
+	for i, a := range args {
+		if i > 0 {
+			b.WriteByte(' ')
 		}
-		if len(a) > 0 && (a[0] == '-' || containsSpace(a)) {
-			out += "\"" + a + "\""
+		if strings.ContainsAny(a, " \t\"") {
+			b.WriteByte('"')
+			b.WriteString(a)
+			b.WriteByte('"')
 		} else {
-			out += a
+			b.WriteString(a)
 		}
 	}
-	return out
-}
-
-func containsSpace(s string) bool {
-	for _, c := range s {
-		if c == ' ' {
-			return true
-		}
-	}
-	return false
+	return b.String()
 }
