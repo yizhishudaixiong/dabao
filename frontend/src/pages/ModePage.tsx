@@ -19,9 +19,11 @@ const ENC_INFO: Record<string, { title: string; desc: string }> = {
   },
 }
 
-// 计算资源打包后的目标路径（与后端 resourceTarget 规则保持一致）：
+// 计算资源打包后的最终位置（给人看的路径）：
 // - 程序目录内：保留相对入口脚本目录的层级
 // - 程序目录外：文件放资源根；文件夹保留文件夹本身及内部结构
+// 注意后端传给 --add-data 的是「目标目录」，比这里少一段文件名——PyInstaller
+// 会自己把文件名追加到 DEST 后面，两者不能直接对照。
 function packedPath(r: ResourceItem, entryScript: string): string {
   const base = baseName(r.path)
   if (!entryScript) return base

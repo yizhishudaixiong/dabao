@@ -14,17 +14,32 @@ import (
 	"pypacker/internal/paths"
 )
 
-// 与前端"打包后路径"显示保持一致的资源目标路径规则：
-// - 程序目录内：保留相对入口脚本目录的层级（文件取相对路径；文件夹取相对路径本身）
-// - 程序目录外（额外添加）：文件放资源根（文件名）；文件夹保留文件夹本身及内部结构（文件夹名）
+// resourceTarget 计算 --add-data 的 DEST。
+//
+// 关键：PyInstaller 的 DEST 语义是「目标**目录**」，文件名由它自己追加
+// （见 PyInstaller/building/utils.py: format_binaries_and_datas，
+//  文件分支是 os.path.join(trg_root_dir, os.path.basename(src))）。
+// 因此：
+//   - 文件夹 → DEST 就是它自己（内部结构原样保留）
+//   - 单文件 → DEST 必须是它所在的目录，否则会被放进 "<文件名>/<文件名>"，
+//     程序按原路径 open() 直接报 FileNotFoundError（曾经踩过）
+//
+// 打包后的最终位置（前端展示用）：项目内文件 = 相对入口脚本目录的路径；
+// 项目外单文件 = 包根目录；文件夹 = 文件夹本身。
 func resourceTarget(abs, projDir string, isDir bool) string {
 	if projDir != "" && fsx.IsWithin(abs, projDir) {
 		rel, err := filepath.Rel(projDir, abs)
 		if err == nil && rel != "." && rel != ".." && !filepath.IsAbs(rel) {
-			return rel
+			if isDir {
+				return rel
+			}
+			return filepath.Dir(rel) // 项目根下的单文件 -> "."
 		}
 	}
-	return filepath.Base(abs)
+	if isDir {
+		return filepath.Base(abs)
+	}
+	return "." // 项目外的单文件放包根
 }
 
 // UPX 内嵌：upx/upx.exe 在编译时被 go:embed 打进工具本体，
