@@ -79,6 +79,8 @@ export default function DepsPage({
     mirrorKeyOf(cfg.pipMirror) === '__custom__' ? cfg.pipMirror : '',
   )
   const [msg, setMsg] = useState('')
+  // 复制按钮的短暂反馈
+  const [logCopied, setLogCopied] = useState(false)
 
   const ready = !!cfg.entryScript && !!cfg.pythonPath
   // 是否需要 PyArmor：用户选了代码加密档
@@ -125,6 +127,24 @@ export default function DepsPage({
     } finally {
       setAnalyzing(false)
     }
+  }
+
+  // 复制全部分析日志（不只是界面上显示的那几十行）。
+  // 优先用 Wails 原生剪贴板：WebView2 里 navigator.clipboard 依赖安全上下文，经常直接抛错。
+  const copyAnalysisLog = async () => {
+    const text = analysisLogs.join('\n')
+    if (!text) return
+    try {
+      await window.runtime.ClipboardSetText(text)
+    } catch {
+      try {
+        await navigator.clipboard.writeText(text)
+      } catch {
+        return
+      }
+    }
+    setLogCopied(true)
+    setTimeout(() => setLogCopied(false), 2000)
   }
 
   // 添加一个手动补充的隐式依赖导入模块（动态导入/插件式加载，静态分析发现不了）
@@ -193,6 +213,11 @@ export default function DepsPage({
     })
   }
 
+  // 上次分析是否失败：从日志缓冲判断（每轮分析开始时缓冲会被清空，
+  // 因此出现"分析失败"只可能来自本轮）。不用组件 state 是因为切页会重建组件，
+  // 而日志缓冲保存在 App 层——重建后标题仍要与上一次结果一致。
+  const analyzeFailed = analysisLogs.some((l) => l.startsWith('分析失败'))
+
   // 合并展示：缺失在前（可勾选安装），已安装在后面（绿色标记）
   const all: Array<DepInfo & { state: 'missing' | 'resolved' }> = [
     ...(deps?.missing ?? []).map((m) => ({ ...m, state: 'missing' as const })),
@@ -240,19 +265,47 @@ export default function DepsPage({
                 </p>
               </>
             ) : (
-              <p className="text-sm text-ink">最近分析日志（含失败原因与原始报错）</p>
+              // 标题跟着结果走：分析成功时不能还写着"含失败原因"，否则看着像失败了
+              <p className="text-sm text-ink">
+                {analyzeFailed ? (
+                  <>
+                    最近分析日志（含失败原因与原始报错）
+                  </>
+                ) : (
+                  <>
+                    分析日志
+                    <span className="ml-2 text-xs text-good">分析已完成，以下为引擎最近输出</span>
+                  </>
+                )}
+              </p>
             )}
             {analysisLogs.length > 0 && (
-              <div
-                className={`mt-2 overflow-auto rounded-field bg-surface-raised p-2 font-mono text-[11px] leading-relaxed text-ink-soft ${
-                  analyzing ? 'max-h-24' : 'max-h-48'
-                }`}
-              >
-                {analysisLogs.slice(-(analyzing ? 8 : 40)).map((l, i) => (
-                  <div key={i} className={analyzing ? 'truncate' : 'whitespace-pre-wrap break-all'}>
-                    {l}
-                  </div>
-                ))}
+              <div className="mt-2">
+                <div className="mb-1.5 flex items-center justify-between gap-3">
+                  <span className="text-[11px] text-ink-faint">
+                    显示最近 {Math.min(analysisLogs.length, analyzing ? 8 : 40)} 行，共 {analysisLogs.length} 行
+                    {analyzing ? '' : '（复制包含全部）'}
+                  </span>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-field border border-line bg-surface-raised px-2.5 py-1 text-xs text-ink-soft transition-colors hover:border-ink-faint"
+                    onClick={copyAnalysisLog}
+                  >
+                    {logCopied ? '✅ 已复制' : '复制全部日志'}
+                  </button>
+                </div>
+                {/* select-text 覆盖全局 select-none：日志要能直接拖选、右键复制 */}
+                <div
+                  className={`select-text overflow-auto rounded-field bg-surface-raised p-2 font-mono text-[11px] leading-relaxed text-ink-soft ${
+                    analyzing ? 'max-h-24' : 'max-h-48'
+                  }`}
+                >
+                  {analysisLogs.slice(-(analyzing ? 8 : 40)).map((l, i) => (
+                    <div key={i} className={analyzing ? 'truncate' : 'whitespace-pre-wrap break-all'}>
+                      {l}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
