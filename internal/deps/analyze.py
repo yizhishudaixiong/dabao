@@ -1,7 +1,7 @@
 # 依赖分析脚本：由 Go 侧 go:embed 读取，写入临时文件后用目标 Python 解释器执行。
 # 调用约定：argv[1] = 入口脚本路径，argv[2] = 分析缓存目录；结果以单行 JSON 输出到 stdout。
 # 原理与字段说明见 internal/deps/scan.go 中 Analyze 的注释。
-import ast, json, os, re, sys, time, importlib.metadata, importlib.util
+import ast, json, os, re, sys, time, tokenize, hashlib, importlib.metadata, importlib.util
 
 # 强制 UTF-8 输出，保证中文包名不乱码
 try:
@@ -14,6 +14,48 @@ def is_stdlib(name):
         return name in sys.stdlib_module_names
     except AttributeError:
         return False
+
+def read_source(path):
+    """按源码自己声明的编码读取（PEP 263 / BOM）。
+
+    不能固定用 utf-8：Windows 上的老项目常见 `# -*- coding: gbk -*-`，
+    按 utf-8 硬读会把中文路径、中文模块名读成乱码，import 名与资源路径随之失真。
+    tokenize.open 会解析编码声明，是标准库给出的正确做法。
+    """
+    with tokenize.open(path) as f:
+        return f.read()
+
+def under(path, root):
+    """判断 path 是否位于 root 之内（按路径层级）。
+
+    不能用 str.startswith：C:\\proj2\\x.py 会被误判成 C:\\proj 的子文件。
+    """
+    try:
+        p = os.path.abspath(path)
+        r = os.path.abspath(root)
+        return os.path.commonpath([p, r]) == r
+    except (ValueError, OSError):
+        return False
+
+def env_signature():
+    """当前环境的"已装包指纹"：所有发行版的 名称==版本 排序后取哈希。
+
+    PyInstaller 的分析结果（Analysis-00.toc）只按"上次收集到的文件 mtime"判断能否复用，
+    新装的包不在上次的清单里，不会让缓存失效。表现是：先分析报某包缺失 → 装上 →
+    再分析仍拿着旧清单，analysisModules 里没有这个包，加密打包就不会收集它。
+    把指纹放进缓存目录名，环境一变就自动重新分析，环境不变仍然秒回。
+    """
+    parts = []
+    for d in importlib.metadata.distributions():
+        try:
+            n = (d.metadata.get('Name') or '').strip().lower()
+            v = d.version or ''
+        except Exception:
+            continue
+        if n:
+            parts.append('%s==%s' % (n, v))
+    parts.sort()
+    return hashlib.md5('\n'.join(parts).encode('utf-8')).hexdigest()[:12]
 
 def norm(name):
     # 归一化包名用于匹配（忽略大小写、连字符/下划线差异）
@@ -82,9 +124,12 @@ def parse_req(path):
     return constraints
 
 def main(entry, workpath):
-    t0 = time.time()
     entry = os.path.abspath(entry)
     base_dir = os.path.dirname(entry)
+    # 分析缓存的最后一层按"环境已装包指纹"分目录：装/卸/升级任何包都会换目录，
+    # 强制重新分析一次，保证 analysisModules（加密打包的收集清单）不会停留在旧环境。
+    workpath = os.path.join(workpath, env_signature())
+    t0 = time.time()
     # 读取同目录 requirements.txt 的版本约束（没有该文件则无约束，装最新版）
     constraints = parse_req(os.path.join(base_dir, 'requirements.txt'))
 
@@ -144,7 +189,7 @@ def main(entry, workpath):
             return False
         if is_site_packages(path):
             return False
-        return os.path.normpath(path).lower().startswith(os.path.normpath(base_dir).lower())
+        return under(path, base_dir)
 
     def is_third_party(name, path):
         # 第三方：路径在 site-packages 里，或本身就是 .pyd 扩展模块
@@ -168,20 +213,30 @@ def main(entry, workpath):
         # 落在项目目录内（如 venv 就建在项目里），其内部 import 也不算依赖
         if is_site_packages(path):
             continue
-        if os.path.normpath(path).lower().startswith(os.path.normpath(base_dir).lower()):
+        if under(path, base_dir):
             local_files.add(os.path.normpath(path))
     local_files.add(os.path.normpath(entry))  # 入口必扫
 
     imports_src = {}  # 顶层 import 名 -> set(来源 "相对路径:行号")
     scanned = set()
+    scanned_truncated = []
+
+    # 单个项目最多解析这么多个本地文件。纯粹是防"误把 site-packages / 巨型目录当项目"
+    # 的兜底，正常项目远达不到；一旦触顶会打日志，避免用户以为分析结果完整。
+    max_scan_files = 2000
 
     def scan(path):
-        if path in scanned or len(scanned) > 300:
+        if path in scanned:
+            return
+        if len(scanned) >= max_scan_files:
+            if not scanned_truncated:
+                scanned_truncated.append(True)
+                print('[分析] 本地 .py 文件超过 %d 个，其余文件不再参与 import 扫描，'
+                      '可能漏掉部分依赖' % max_scan_files, file=sys.stderr)
             return
         scanned.add(path)
         try:
-            with open(path, "r", encoding="utf-8-sig", errors="ignore") as f:
-                tree = ast.parse(f.read(), path)
+            tree = ast.parse(read_source(path), path)
         except Exception:
             return
         try:

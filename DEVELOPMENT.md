@@ -48,7 +48,7 @@ dabao/
 | 模块 | 关键文件 | 说明 |
 | --- | --- | --- |
 | 入口 | `main.go` / `app.go` | 窗口配置、拖拽开关、忙碌时拦截关闭；`App` 上的方法即前端可调用的 API |
-| 参数组装 | `builder/command.go` | 把 `BuildConfig` 翻译成 PyInstaller 参数；图标转换、版本信息文件、`--copy-metadata`、本地模块 `--hidden-import` |
+| 参数组装 | `builder/command.go` | 把 `BuildConfig` 翻译成 PyInstaller 参数；图标转换、版本信息文件、`--copy-metadata`、本地模块 `--hidden-import`（加密时递归收集子包）、避开命令行长度上限 |
 | 执行 | `builder/run.go` | 临时工作区 → 执行 → 收集产物 → 清理；流式转发日志、支持取消 |
 | 加密 | `builder/encrypt.go` | 逐文件 PyArmor 加密，超限文件明文兜底，收集 runtime |
 | 资源 | `builder/resource.go`、`resdep.go`、`ast_scan.py` | 扫描可打包资源；AST 静态分析代码里引用了哪些资源 |
@@ -130,6 +130,9 @@ push 源码到码云
 - **全盘扫描深度 7、顶层 6 路并发、每目录只 `ReadDir` 一次**。深度 7 是为了覆盖 Windows 默认的 `Users\你\AppData\Local\Programs\Python\Python3xx`（正好第 7 层）；再深收益极低、耗时翻倍。
 - **单文件模式有 4GB 上限**（PyInstaller 归档限制），超了只能改多文件。
 - **PyArmor 试用版限制单代码对象 32KB**。超限文件跳过加密、明文打包并在日志里列出；入口脚本超限直接报错。失败归因只在 pyarmor 输出 `out of license` 时才按超限处理，其它错误原样上报。
+- **加密后必须把项目内所有本地模块补成 `--hidden-import`（递归，含子包）**。PyArmor 加密后 PyInstaller 读不到任何 import，导入图在每个加密模块处都断了；只补顶层模块时 `from pkg import widgets` 会在产物里报 `ImportError: cannot import name 'widgets'`。这条有端到端回归测试兜着（见第 10 节）。
+- **依赖分析缓存按「环境已装包指纹」分目录**。PyInstaller 的 `Analysis-00.toc` 只按已收集文件的 mtime 判断能否复用，新装的包不在旧清单里、不会让缓存失效——表现是「装上缺失包 → 重新分析仍拿旧清单」，加密打包就会漏收集。把 `名称==版本` 的哈希拼进缓存目录名，环境一变自动重分析，环境不变仍然秒回。
+- **打包命令行有长度上限**（Windows `CreateProcess` 32767 字符）。装了几百个包时 `--copy-metadata` + `--collect-all` + `--hidden-import` 很容易逼近上限，超了只会得到一句 `filename or extension is too long`。`fitCmdline` 在超长时优先丢弃 `--copy-metadata`（最不影响产物），仍超长则给出中文报错，绝不擅自删 hidden-import。
 - **UPX 会提高杀软误报率**，默认关闭。
 - **便携版下载没有校验和**（上游未提供 SHA256），只做总长度校验；下载走第三方 GitHub 代理，属于已知信任边界。
 - **前端日志上限 4000 行**、面板只渲染最近 800 行；超出部分丢弃（诊断只看末尾）。
@@ -170,16 +173,28 @@ cd frontend && npx tsc --noEmit && npm run build
 | --- | --- |
 | `internal/env` | 全盘扫描语义：venv 识别、跳过名单、深度边界、符号链接 |
 | `internal/portable` | 分块覆盖完整性（含不能被 4 整除的大小）、端到端下载、断点续传、删除时的路径校验 |
-| `internal/builder` | 程序名称校验、加密前的 .py 收集规则（`environment/` 不被误跳） |
+| `internal/builder` | 程序名称校验、加密前的 .py 收集规则（`environment/` 不被误跳）、加密时的本地模块递归收集、排除模块的生效范围、超长命令行裁剪、资源扫描（含 GBK 源码与 pathlib 的 `/` 拼接） |
 | `internal/fsx` | 路径归属、虚拟环境标志识别、跳过目录清单 |
 | `pypacker`（根包） | 路径归属判断、便携版标记 |
 | `internal/deps` | 错误诊断规则匹配 |
+
+需要真实打包 / 联网的端到端测试默认跳过，改动加密或分析链路时手动跑一遍：
+
+```bash
+# 加密打包：本地子包 + 包内相对导入 + 二级嵌套（约 35 秒，需已装 pyinstaller / pyarmor）
+DABAO_E2E=1 go test ./internal/builder/ -run TestEncryptedBuildLocalSubpackage -v
+
+# 依赖分析缓存：装包后重新分析必须拿到新清单（约 60 秒，会建 venv 并联网装包）
+DABAO_E2E=1 go test ./internal/deps/ -run TestInstallThenReanalyze -v
+```
+
+两者都可用 `DABAO_PYTHON` 指定解释器路径。
 
 **手工验证清单**（改动涉及打包链路时必做）：
 
 1. 用最小脚本（`print("hi")`）跑一遍单文件 + 无控制台，双击产物确认能运行
 2. 勾选一个资源文件夹，确认产物里路径与界面「打包后」显示一致
-3. 选「基础加密」打包，确认产物能运行、日志里没有"未加密"警告
+3. 选「基础加密」打包，确认产物能运行、日志里没有"未加密"警告；**项目里只要有子包（`pkg/mod.py`），就必须实际跑一遍产物**——加密后子模块没被收集是这条链路上最容易复发的坑
 4. 下载一个便携版 Python，确认列表出现、能选中并打包
 5. 触发一次失败（例如入口脚本写错语法），确认日志底部有中文原因 + 建议 + 最近输出
 

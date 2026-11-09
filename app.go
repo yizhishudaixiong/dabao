@@ -287,11 +287,17 @@ func (a *App) SelectResourceFile() (string, error) {
 
 // AddResource 手动添加一个资源条目（文件夹或文件），供前端加入资源列表
 func (a *App) AddResource(path string) (config.ResourceItem, error) {
-	fi, err := os.Stat(path)
+	// 统一转绝对路径：资源清单里的路径会参与"是否已包含"的比对和 --add-data 拼接，
+	// 相对路径在不同工作目录下指向不同文件，比对会永远不命中。
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return config.ResourceItem{}, fmt.Errorf("资源路径无效: %s", path)
+	}
+	fi, err := os.Stat(abs)
 	if err != nil {
 		return config.ResourceItem{}, err
 	}
-	return config.ResourceItem{Path: path, Enabled: true, IsDir: fi.IsDir()}, nil
+	return config.ResourceItem{Path: abs, Enabled: true, IsDir: fi.IsDir()}, nil
 }
 
 // AnalyzeResourceDeps 用指定 Python 执行 AST 扫描，分析代码引用的资源与已勾选资源的对比（资源依赖分析）

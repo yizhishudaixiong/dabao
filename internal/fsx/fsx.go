@@ -40,14 +40,16 @@ func HasPyvenvCfg(dir string) bool {
 // noiseDirs 扫描项目目录时一律跳过的"噪音"目录：版本控制、IDE、缓存、构建产物、依赖目录。
 // 在这些目录里找 .py / 资源没有意义，只会拖慢扫描并产生误报。
 var noiseDirs = map[string]bool{
-	"__pycache__":   true,
-	".git":          true,
-	".svn":          true,
-	".hg":           true,
-	".venv":         true,
-	"venv":          true,
-	"venv_py":       true,
-	"env":           true,
+	"__pycache__": true,
+	".git":        true,
+	".svn":        true,
+	".hg":         true,
+	".venv":       true,
+	"venv":        true,
+	"venv_py":     true,
+	// 注意：这里不能放 "env"。它是很常见的用户包名/目录名（env/__init__.py），
+	// 而真正的虚拟环境（含名为 env 的）都有 pyvenv.cfg，由 HasPyvenvCfg 识别，
+	// 不需要再按名字猜——按名字猜就会把用户代码当成虚拟环境跳过（漏加密/漏扫描）。
 	"site-packages": true,
 	"node_modules":  true,
 	".idea":         true,

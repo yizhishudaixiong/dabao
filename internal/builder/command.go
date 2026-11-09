@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"pypacker/internal/cmdutil"
 	"pypacker/internal/config"
 	"pypacker/internal/deps"
+	"pypacker/internal/fsx"
 )
 
 // BuildArgs 根据配置组装 PyInstaller 参数（基于 python -m PyInstaller 调用）
@@ -159,7 +161,8 @@ func BuildArgs(cfg *config.BuildConfig, workspace, entryScript string, extraData
 	//   否则进包的是明文模块；入口同名模块名不变，排除逻辑一致。
 	if cfg.EntryScript != "" {
 		var modDir, entryBase string
-		if encProjRoot != "" {
+		encrypted := encProjRoot != ""
+		if encrypted {
 			modDir = encProjRoot
 			entryBase = strings.TrimSuffix(filepath.Base(entryScript), filepath.Ext(entryScript))
 		} else {
@@ -167,8 +170,20 @@ func BuildArgs(cfg *config.BuildConfig, workspace, entryScript string, extraData
 			entryBase = strings.TrimSuffix(filepath.Base(cfg.EntryScript), filepath.Ext(cfg.EntryScript))
 		}
 		args = append(args, "--paths", modDir)
-		for _, m := range collectModulesIn(modDir, entryBase) {
-			args = append(args, "--hidden-import", m)
+		if encrypted {
+			// 加密后 PyInstaller 从任何加密模块里都看不到 import 语句，整个导入图是断的：
+			// 只补顶层模块的话，`from pkg import widgets` 会因为 pkg.widgets 没被收集而在
+			// 运行时报 ImportError。必须把项目内所有本地模块（含子包里的每个模块）逐个补上，
+			// 等价于 PyArmor 官方 --pack 用明文分析结果替换 a.pure 路径的做法。
+			for _, m := range collectLocalModules(modDir, entryBase) {
+				args = append(args, "--hidden-import", m)
+			}
+		} else {
+			// 未加密时 PyInstaller 能顺着真实 import 图收集，只需兜底顶层模块
+			// （主要针对非 ASCII 模块名，PyInstaller 对其收集有缺陷）
+			for _, m := range collectModulesIn(modDir, entryBase) {
+				args = append(args, "--hidden-import", m)
+			}
 		}
 	}
 
@@ -211,6 +226,10 @@ func BuildArgs(cfg *config.BuildConfig, workspace, entryScript string, extraData
 			if top == "" || topSeen[top] {
 				continue
 			}
+			// 用户明确排除的模块不能再补回来，否则「排除模块」在加密模式下完全失效
+			if excludedModule(cfg.ExcludeModules, top) {
+				continue
+			}
 			topSeen[top] = true
 			args = append(args, "--hidden-import", top)
 		}
@@ -221,9 +240,23 @@ func BuildArgs(cfg *config.BuildConfig, workspace, entryScript string, extraData
 			if pkg == "" || seen[pkg] || isToolPkg(pkg) {
 				continue
 			}
+			// 整个包都被用户排除时不要再 collect-all：
+			// --exclude-module 只挡模块，collect-all 带进来的数据/二进制仍会被打进产物
+			if allModulesExcluded(d.ImportName, cfg.ExcludeModules) {
+				continue
+			}
 			seen[pkg] = true
 			args = append(args, "--collect-all", pkg)
 		}
+	}
+
+	// 命令行长度兜底：Windows 单条命令行上限 32767 字符（CreateProcess），
+	// 大环境（装了几百个包）时 --copy-metadata + --collect-all + --hidden-import
+	// 很容易逼近这个长度，超了会直接启动失败，且报错是难以理解的
+	// "The filename or extension is too long"。先丢掉最不关键的 --copy-metadata，再超就明确报错。
+	args = fitCmdline(args, onLog)
+	if n := cmdlineLen(args); n > maxCmdlineLen {
+		return nil, fmt.Errorf("打包参数过长（约 %d 字符，Windows 命令行上限 32767）：当前环境安装的包太多。建议在多文件模式下打包，或减少依赖数量", n)
 	}
 
 	// 入口脚本（未加密时为用户脚本；加密时传入加密后的脚本）
@@ -234,6 +267,81 @@ func BuildArgs(cfg *config.BuildConfig, workspace, entryScript string, extraData
 	args = append(args, absEntry)
 
 	return args, nil
+}
+
+// excludedModule 判断模块名是否被用户列入「排除模块」（大小写不敏感，
+// 同时比较完整名与顶层名：排除 pkg 应能挡住 pkg.sub）
+func excludedModule(excludes []string, mod string) bool {
+	mod = strings.ToLower(strings.TrimSpace(mod))
+	if mod == "" {
+		return false
+	}
+	for _, e := range excludes {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" {
+			continue
+		}
+		if mod == e || strings.HasPrefix(mod, e+".") || strings.HasPrefix(e, mod+".") {
+			return true
+		}
+	}
+	return false
+}
+
+// allModulesExcluded 判断一条依赖的全部 import 名是否都被排除。
+// ImportName 形如 "win32api, win32gui"；只有全部命中才跳过 collect-all，
+// 部分命中时仍要收集（否则剩下的模块会缺）。
+func allModulesExcluded(importNames string, excludes []string) bool {
+	mods := strings.Split(importNames, ",")
+	found := false
+	for _, m := range mods {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+		found = true
+		if !excludedModule(excludes, m) {
+			return false
+		}
+	}
+	return found
+}
+
+// maxCmdlineLen Windows 命令行安全上限（系统上限 32767，留出余量）
+const maxCmdlineLen = 30000
+
+// cmdlineLen 估算拼接后的命令行长度（参数 + 分隔空格）
+func cmdlineLen(args []string) int {
+	n := 0
+	for _, a := range args {
+		n += len(a) + 1
+	}
+	return n
+}
+
+// fitCmdline 在命令行过长时按"最不影响产物"的顺序裁剪：
+//  1. 丢掉全部 --copy-metadata（几百个包时占 1 万字符以上；缺元数据只会让
+//     少数包在查询自身版本时报 PackageNotFoundError）
+//  2. 仍然超长就原样返回，由调用方报错（不擅自删 --hidden-import / --collect-all，
+//     删掉它们会直接导致产物缺模块）
+func fitCmdline(args []string, onLog func(string)) []string {
+	if cmdlineLen(args) <= maxCmdlineLen {
+		return args
+	}
+	out := make([]string, 0, len(args))
+	dropped := 0
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--copy-metadata" && i+1 < len(args) {
+			i++
+			dropped++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	if dropped > 0 && onLog != nil {
+		onLog(fmt.Sprintf("[警告] 打包参数过长，已跳过 %d 条 --copy-metadata（不影响程序功能；若某库提示找不到自身版本信息，可在「附加参数」里手动补 --copy-metadata 包名）", dropped))
+	}
+	return out
 }
 
 // appendCopyMetadataArgs 把 Python 环境里所有已安装发行版的元数据（dist-info）
@@ -302,6 +410,84 @@ func collectModulesIn(dir, entryBase string) []string {
 		mods = append(mods, base)
 	}
 	return mods
+}
+
+// collectLocalModules 递归收集目录下所有本地模块的完整点分名（pkg、pkg.widgets、pkg.sub.mod），
+// 专供「加密打包」使用。
+//
+// 为什么必须递归：PyArmor 加密后，PyInstaller 从加密脚本里读不到任何 import 语句，
+// 整个导入图在加密模块处就断了。只补顶层模块（如 pkg）时，PyInstaller 会去分析
+// encProjRoot/pkg/__init__.py，那同样是加密文件、同样没有 import，于是 pkg.widgets
+// 永远不会被收集，产物运行报 `ImportError: cannot import name 'widgets' from 'pkg'`。
+//
+// 进入子目录的条件与 Python 的常规包语义一致：目录下有 __init__.py。
+// 这样 tests/、docs/ 这类没有 __init__.py 的普通文件夹不会被当成包拖进产物。
+func collectLocalModules(root, entryBase string) []string {
+	var mods []string
+	var walk func(dir, prefix string)
+	walk = func(dir, prefix string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() {
+				if fsx.IsNoiseDir(name) || fsx.HasPyvenvCfg(filepath.Join(dir, name)) {
+					continue
+				}
+				if _, err := os.Stat(filepath.Join(dir, name, "__init__.py")); err != nil {
+					continue // 不是常规包
+				}
+				mods = append(mods, joinMod(prefix, name))
+				walk(filepath.Join(dir, name), joinMod(prefix, name))
+				continue
+			}
+			if !strings.EqualFold(filepath.Ext(name), ".py") {
+				continue
+			}
+			base := strings.TrimSuffix(name, filepath.Ext(name))
+			if base == "__init__" {
+				continue // 包名本身已在进入目录时记录
+			}
+			// 只有合法标识符才能作为模块名导入（中文模块名合法，my-script 不合法）
+			if !isModuleIdent(base) {
+				continue
+			}
+			if prefix == "" && base == entryBase {
+				continue // 入口脚本由 PyInstaller 直接处理
+			}
+			mods = append(mods, joinMod(prefix, base))
+		}
+	}
+	walk(root, "")
+	return mods
+}
+
+// isModuleIdent 判断字符串能否作为 Python 模块名导入（str.isidentifier 的 Go 侧近似实现）。
+// 允许字母（含中文）、数字、下划线，且不能以数字开头。
+func isModuleIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if r == '_' || unicode.IsLetter(r) {
+			continue
+		}
+		if i > 0 && unicode.IsDigit(r) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// joinMod 拼点分模块名（prefix 为空时返回 name 本身）
+func joinMod(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "." + name
 }
 
 // isToolPkg 判断是否为打包工具自身的包（PyInstaller / PyArmor 及其核心依赖），

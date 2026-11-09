@@ -15,6 +15,7 @@ import ast
 import json
 import os
 import sys
+import tokenize
 
 # 双保险：强制 stdout 以 UTF-8 输出，避免 Windows 下 GBK 编码导致中文乱码
 try:
@@ -68,9 +69,14 @@ def _name_of(func):
 
 
 def _contains_file(node):
-    """调用链里是否出现 __file__（用于判断路径基准）"""
+    """表达式里是否出现 __file__（用于判断路径基准）"""
     if isinstance(node, ast.Name) and node.id == '__file__':
         return True
+    if isinstance(node, ast.Attribute):
+        # Path(__file__).parent / Path(__file__).parent
+        return _contains_file(node.value)
+    if isinstance(node, ast.BinOp):
+        return _contains_file(node.left) or _contains_file(node.right)
     if isinstance(node, ast.Call):
         for a in node.args:
             if _contains_file(a):
@@ -79,6 +85,40 @@ def _contains_file(node):
             if kw.value and _contains_file(kw.value):
                 return True
     return False
+
+
+def _path_parts(node):
+    """把 pathlib 的 / 拼接拆成 (路径片段列表, 是否基于 __file__)。
+
+    现代写法普遍是 Path(__file__).parent / 'assets' / 'logo.png'，
+    这是 BinOp(Div) 而不是函数调用，只按调用名匹配会整条漏掉。
+    """
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        lp, lf = _path_parts(node.left)
+        rp, rf = _path_parts(node.right)
+        return lp + rp, lf or rf
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value], False
+    if _contains_file(node):
+        return [], True
+    return [], False
+
+
+def _is_write_mode(node):
+    """open() 的写入模式判断（open('out.txt', 'w') 不是资源依赖）。
+
+    第二个位置参数或 mode 关键字可能写着模式串；只认字符串常量，
+    变量一律按"读"处理（宁可多报，不漏报）。
+    """
+    mode = None
+    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) \
+            and isinstance(node.args[1].value, str):
+        mode = node.args[1].value
+    for kw in node.keywords:
+        if kw.arg == 'mode' and isinstance(kw.value, ast.Constant) \
+                and isinstance(kw.value.value, str):
+            mode = kw.value.value
+    return bool(mode) and any(c in mode for c in 'wax')
 
 
 # 常见资源扩展名（赋值语句兜底判断用）
@@ -94,7 +134,9 @@ RES_EXTS = {
 
 def scan_file(path, root):
     try:
-        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+        # tokenize.open 会读源码里的编码声明（PEP 263）：
+        # Windows 老项目常见 `# -*- coding: gbk -*-`，按 UTF-8 硬读会让中文路径变成乱码。
+        with tokenize.open(path) as f:
             lines = f.read().splitlines()
         tree = ast.parse('\n'.join(lines))
     except Exception:
@@ -110,12 +152,23 @@ def scan_file(path, root):
 
     out = []
     for node in ast.walk(tree):
+        line = getattr(node, 'lineno', 0)
+
+        # 0. pathlib 的 / 拼接：Path(__file__).parent / 'assets' / 'logo.png'
+        #    这是 BinOp 而不是函数调用，必须放在"不是 Call 就跳过"之前判断。
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            parts, file_base = _path_parts(node)
+            if parts:
+                out.append({'ref': '/'.join(parts), 'file': rel, 'line': line,
+                            'dynamic': False, 'kind': 'join', 'file_base': file_base,
+                            'code': code_of(node)})
+            continue
+
         if not isinstance(node, ast.Call):
             continue
         name = _name_of(node.func)
         if name is None:
             continue
-        line = getattr(node, 'lineno', 0)
 
         # 1. DLL 加载：ctypes.WinDLL('user32.dll') / LoadLibrary('x.dll')
         if name in DLL_CALLS:
@@ -145,8 +198,8 @@ def scan_file(path, root):
                             'code': code_of(node)})
             continue
 
-        # 3. pathlib.Path('xxx') 单参数构造
-        if name == 'Path' and isinstance(node.func, ast.Name):
+        # 3. pathlib.Path('xxx') 单参数构造（Path(...) 与 pathlib.Path(...) 都算）
+        if name == 'Path':
             arg = node.args[0] if node.args else None
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 out.append({'ref': arg.value, 'file': rel, 'line': line,
@@ -156,6 +209,8 @@ def scan_file(path, root):
 
         # 4. 读取类调用：第一个字符串常量参数是资源路径
         if name in READ_CALLS:
+            if name == 'open' and _is_write_mode(node):
+                continue  # 写文件不是"必需资源"，报出来只会误导
             arg = node.args[0] if node.args else None
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 out.append({'ref': arg.value, 'file': rel, 'line': line,

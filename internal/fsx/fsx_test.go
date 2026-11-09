@@ -47,12 +47,14 @@ func TestHasPyvenvCfg(t *testing.T) {
 
 // 噪音目录清单大小写不敏感（Windows 语义），系统目录单独一组
 func TestNoiseDirNames(t *testing.T) {
-	for _, name := range []string{"__pycache__", ".GIT", "Node_Modules", "build", "env", "venv_py"} {
+	for _, name := range []string{"__pycache__", ".GIT", "Node_Modules", "build", "venv_py"} {
 		if !IsNoiseDir(name) {
 			t.Errorf("应判定为噪音目录: %q", name)
 		}
 	}
-	for _, name := range []string{"src", "assets", "package", "environment"} {
+	// env 曾经在跳过名单里，但它是很常见的用户包名（env/__init__.py）。
+	// 真正的虚拟环境一律有 pyvenv.cfg，由 HasPyvenvCfg 识别，不该再按名字猜。
+	for _, name := range []string{"src", "assets", "package", "environment", "env"} {
 		if IsNoiseDir(name) {
 			t.Errorf("不应判定为噪音目录: %q", name)
 		}

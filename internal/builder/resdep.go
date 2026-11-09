@@ -3,14 +3,17 @@ package builder
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"pypacker/internal/cmdutil"
 	"pypacker/internal/config"
+	"pypacker/internal/errhint"
 	"pypacker/internal/fsx"
 )
 
@@ -66,6 +69,13 @@ func AnalyzeResourceDeps(pythonPath, entryScript string, resources []config.Reso
 	skipJSON, _ := json.Marshal(fsx.NoiseDirNames())
 	out, err := cmdutil.Command(py, tmpName, entryDir, string(skipJSON)).Output()
 	if err != nil {
+		// Output() 会把子进程 stderr 收进 ExitError：脚本崩了（语法不兼容、
+		// 目标解释器版本过低等）时，把 traceback 带出来，否则界面上只剩
+		// 一句"exit status 1"，用户完全无法自查。
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && strings.TrimSpace(string(ee.Stderr)) != "" {
+			return nil, fmt.Errorf("资源分析执行失败: %v\n%s", err, errhint.Tail(string(ee.Stderr), 12))
+		}
 		return nil, fmt.Errorf("资源分析执行失败: %v", err)
 	}
 	var items []astScanItem
@@ -79,6 +89,8 @@ func AnalyzeResourceDeps(pythonPath, entryScript string, resources []config.Reso
 	//  - 系统库（DLL 纯文件名且项目目录中不存在，如 user32.dll）→ 跳过，不展示
 	var deps []config.ResourceDep
 	seen := map[string]bool{}
+	// 文件名 -> 完整路径索引，首次需要时才建立（大多数项目用不到）
+	var nameIndex map[string]string
 	for _, s := range items {
 		if s.Dynamic {
 			continue
@@ -113,9 +125,13 @@ func AnalyzeResourceDeps(pythonPath, entryScript string, resources []config.Reso
 		}
 		abs = filepath.Clean(abs)
 		exists := fileExists(abs)
-		// 解析出的路径不存在时，在入口目录下递归查找同名文件（变量拼路径常指到子目录）
+		// 解析出的路径不存在时，在入口目录下找同名文件（变量拼路径常指到子目录）。
+		// 用一次性建立的索引，避免每个未命中引用都遍历一遍整个项目目录。
 		if !exists {
-			if found := findSameName(entryDir, filepath.Base(abs)); found != "" {
+			if nameIndex == nil {
+				nameIndex = buildNameIndex(entryDir)
+			}
+			if found, ok := nameIndex[strings.ToLower(filepath.Base(abs))]; ok {
 				abs = found
 				exists = true
 			}
@@ -165,9 +181,10 @@ func lastSegmentRef(ref string) string {
 	return ref[i+1:]
 }
 
-// findSameName 在入口目录下递归查找同名文件（跳过噪音目录），返回第一个匹配的完整路径
-func findSameName(rootDir, name string) string {
-	var found string
+// buildNameIndex 递归建立「文件名（小写）→ 完整路径」索引（跳过噪音目录与虚拟环境）。
+// 同名文件取遍历顺序里的第一个，与逐次遍历的结果一致，但整体只走一遍目录树。
+func buildNameIndex(rootDir string) map[string]string {
+	index := map[string]string{}
 	_ = filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -184,13 +201,13 @@ func findSameName(rootDir, name string) string {
 			}
 			return nil
 		}
-		if strings.EqualFold(d.Name(), name) {
-			found = path
-			return filepath.SkipAll
+		key := strings.ToLower(d.Name())
+		if _, ok := index[key]; !ok {
+			index[key] = path
 		}
 		return nil
 	})
-	return found
+	return index
 }
 
 // resDepIncluded 判断绝对路径是否已被勾选的资源覆盖（精确匹配或位于已勾选文件夹内）
