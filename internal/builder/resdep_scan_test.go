@@ -89,3 +89,73 @@ func gbkChar(r rune) []byte {
 	}
 	return []byte{'?'}
 }
+
+// 资源分析的准确率回归：既不能把普通字符串当资源，也不能漏掉真实的资源引用。
+//
+// 覆盖的误报来源：写入模式的 open、普通函数参数（parser.load('section')）、
+// 常量名（NAME = 'settings.json'）、URL、正则。
+// 覆盖的漏报来源：自定义封装 resource_path('data/config.json')、QIcon('a.png')、
+// 非常见扩展名（.html/.qss）、pathlib 的 / 拼接。
+func TestResourceDepsAccuracy(t *testing.T) {
+	py := os.Getenv("DABAO_PYTHON")
+	if py == "" {
+		py = `C:/Users/xiong/AppData/Local/Programs/Python/Python312/python.exe`
+	}
+	if _, err := os.Stat(py); err != nil {
+		t.Skip("本机没有用于测试的 Python")
+	}
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"assets/logo.png", "assets/missing.png", "data/config.json", "style.qss", "index.html"} {
+		if f != "assets/missing.png" { // 故意不建这个文件，验证"引用了但不存在"仍会被报出来
+			write(f, "x")
+		}
+	}
+	write("main.py", ""+
+		"import logging\n"+
+		"from pathlib import Path\n"+
+		"logging.info('report.csv')\n"+
+		"parser.load('section')\n"+
+		"db.copy('users')\n"+
+		"URL = 'https://cdn.example.com/logo.png'\n"+
+		"open('assets/logo.png', 'rb')\n"+
+		"open('out.txt', 'w')\n"+
+		"Path(__file__).parent / 'data' / 'config.json'\n"+
+		"QIcon('style.qss')\n"+
+		"open('index.html')\n"+
+		"open('assets/missing.png')\n"+
+		"glob.glob('assets/*.png')\n")
+
+	deps, err := AnalyzeResourceDeps(py, filepath.Join(dir, "main.py"), []config.ResourceItem{})
+	if err != nil {
+		t.Fatalf("资源分析失败: %v", err)
+	}
+	got := map[string]bool{}
+	for _, d := range deps {
+		got[d.Ref] = true
+	}
+	for _, want := range []string{"assets/logo.png", "data/config.json", "style.qss", "index.html", "assets/missing.png"} {
+		if !got[want] {
+			t.Errorf("漏报资源 %q", want)
+		}
+	}
+	for _, bad := range []string{"out.txt", "report.csv", "section", "users", "https://cdn.example.com/logo.png", "assets/*.png"} {
+		if got[bad] {
+			t.Errorf("误报 %q：不是随包分发的资源", bad)
+		}
+	}
+	// assets/missing.png 必须标成"不存在"，界面才能提示用户补文件
+	for _, d := range deps {
+		if d.Ref == "assets/missing.png" && d.Exists {
+			t.Error("不存在的资源应标记 exists=false")
+		}
+	}
+}

@@ -37,6 +37,58 @@ def under(path, root):
     except (ValueError, OSError):
         return False
 
+# 依赖扫描要跳过的目录/文件：测试、文档、示例里的 import 不是程序运行所需，
+# 算进来会凭空多出 pytest / sphinx 之类的"缺失依赖"。
+# 注意不能按名字跳 env / venv 之类可能被用户拿来当包名的目录，
+# 真正的虚拟环境一律有 pyvenv.cfg，用标志文件识别。
+SKIP_SCAN_DIRS = {
+    '__pycache__', '.git', '.svn', '.hg', '.venv', 'venv', 'venv_py',
+    'site-packages', 'node_modules', '.idea', '.vscode', '.pytest_cache',
+    'build', 'dist', 'tests', 'test', 'docs', 'doc', 'examples', 'example',
+    'benchmarks', 'bench',
+}
+SKIP_SCAN_FILES = {'setup.py', 'conftest.py', 'noxfile.py', 'tasks.py'}
+
+
+def iter_project_py(root):
+    """遍历项目目录下所有 .py（跳过噪音 / 测试 / 文档目录与构建脚本）。
+
+    为什么不只扫 PyInstaller 收集到的文件：sys.path.append('lib') 这类注入目录、
+    插件式加载的目录，PyInstaller 都看不到，那些文件里的 import 就会整片漏掉。
+    """
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            d for d in dirnames
+            if d.lower() not in SKIP_SCAN_DIRS
+            and not os.path.isfile(os.path.join(dirpath, d, 'pyvenv.cfg'))
+        ]
+        for fn in filenames:
+            if fn.lower().endswith('.py') and fn.lower() not in SKIP_SCAN_FILES:
+                yield os.path.join(dirpath, fn)
+
+
+def source_signature(root):
+    """项目源码指纹：所有 .py 的 相对路径 + 大小 + 修改时间。
+
+    为什么不能只靠 PyInstaller 自己的缓存判断：它只比对"上次收集到的文件"的 mtime。
+    sys.path 注入目录、插件目录里的文件根本不在依赖图里，改了它们不会让缓存失效，
+    重新分析会拿到旧结果（正好是这类项目最容易出问题的地方）。
+    """
+    parts = []
+    for p in iter_project_py(root):
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        try:
+            rel = os.path.relpath(p, root)
+        except ValueError:
+            rel = p
+        parts.append('%s:%d:%d' % (rel.replace('\\', '/'), st.st_size, st.st_mtime_ns))
+    parts.sort()
+    return hashlib.md5('\n'.join(parts).encode('utf-8')).hexdigest()[:12]
+
+
 def env_signature():
     """当前环境的"已装包指纹"：所有发行版的 名称==版本 排序后取哈希。
 
@@ -95,6 +147,28 @@ MODULE_TO_PKG.update({
     'skimage': 'scikit-image',
     'nacl': 'pynacl',
     'pkg_resources': 'setuptools',
+    # pipreqs 官方表遗漏、但国内桌面/自动化项目高频的模块。
+    # 漏了会退化成"用模块名当包名"，用户装到的往往是同名野包或装不上。
+    'fitz': 'PyMuPDF',          # PDF 处理
+    'docx': 'python-docx',      # Word
+    'pptx': 'python-pptx',      # PPT
+    'grpc': 'grpcio',           # 注意 PyPI 上另有一个废弃的 grpc 包
+    'wx': 'wxPython',
+    'paddle': 'paddlepaddle',
+    'gi': 'PyGObject',
+    'clr': 'pythonnet',         # .NET 互操作
+    'websocket': 'websocket-client',
+    'socketio': 'python-socketio',
+    'engineio': 'python-engineio',
+    'speech_recognition': 'SpeechRecognition',
+    'jose': 'python-jose',
+    'multipart': 'python-multipart',
+    'dns': 'dnspython',
+    'socks': 'PySocks',
+    'ldap': 'python-ldap',
+    # pipreqs 把 MySQLdb 映射到 MySQL-python（只支持 Python 2），必须覆盖。
+    # 注意 key 必须小写：查找用的是 mod.lower()
+    'mysqldb': 'mysqlclient',
 })
 
 def parse_req(path):
@@ -126,9 +200,6 @@ def parse_req(path):
 def main(entry, workpath):
     entry = os.path.abspath(entry)
     base_dir = os.path.dirname(entry)
-    # 分析缓存的最后一层按"环境已装包指纹"分目录：装/卸/升级任何包都会换目录，
-    # 强制重新分析一次，保证 analysisModules（加密打包的收集清单）不会停留在旧环境。
-    workpath = os.path.join(workpath, env_signature())
     t0 = time.time()
     # 读取同目录 requirements.txt 的版本约束（没有该文件则无约束，装最新版）
     constraints = parse_req(os.path.join(base_dir, 'requirements.txt'))
@@ -154,6 +225,24 @@ def main(entry, workpath):
     toc_file = os.path.join(CONF['workpath'], 'Analysis-00.toc')
     had_cache = os.path.isfile(toc_file)
 
+    # PyInstaller 的缓存只比对"上次收集到的文件"的 mtime，两类变化它都看不见：
+    #   ① 新装/卸载/升级了包（新包不在旧清单里）；
+    #   ② 改了不在依赖图里的本地文件（sys.path 注入目录、插件目录）。
+    # 两份指纹拼成一个"戳"，与上次不同就删掉 Analysis-00.toc 强制重新分析。
+    stamp_file = os.path.join(workpath, 'analyze-stamp.txt')
+    stamp = env_signature() + '-' + source_signature(base_dir)
+    try:
+        with open(stamp_file, 'r', encoding='utf-8') as f:
+            prev_stamp = f.read().strip()
+    except OSError:
+        prev_stamp = ''
+    if prev_stamp != stamp and os.path.isfile(toc_file):
+        try:
+            os.remove(toc_file)
+            had_cache = False
+        except OSError:
+            pass
+
     a = Analysis([entry], pathex=[base_dir], binaries=[], datas=[],
                  hiddenimports=[], hookspath=[], runtime_hooks=[],
                  excludes=[], noarchive=False)
@@ -161,6 +250,11 @@ def main(entry, workpath):
     # 只有"上次结果存在 + 本次很快返回"才算命中缓存；
     # 单看耗时会把小型项目的首次分析（引擎加载本身也要几秒）误标成命中
     is_cached = had_cache and dt < 3.0
+    try:
+        with open(stamp_file, 'w', encoding='utf-8') as f:
+            f.write(stamp)
+    except OSError:
+        pass
 
     # ---------- 2. 已收集模块集合 ----------
     # 注意：analysisModules 只使用纯 Python 模块（pure）的模块名；
@@ -180,16 +274,24 @@ def main(entry, workpath):
         p = str(path).replace('\\', '/').lower()
         return '/site-packages/' in p or '/dist-packages/' in p
 
+    # 项目里真实存在的模块名（顶层名）：用来判断某个 import 到底是本地代码还是第三方。
+    # 只看 PyInstaller 收集结果是不够的——sys.path 注入目录里的本地模块不会被收集，
+    # 于是 import helpers 会被当成"缺失的 pip 包 helpers"，用户一装就装进一个同名野包。
+    local_names = set()
+    for p in iter_project_py(base_dir):
+        stem = os.path.splitext(os.path.basename(p))[0]
+        if stem != '__init__':
+            local_names.add(stem)
+
     def is_local_mod(mod):
+        # ① PyInstaller 收集到的、位于项目目录内的模块（最权威）
         info = collected.get(mod)
-        if not info:
-            return False
-        path = info[1] or ''
-        if not path:
-            return False
-        if is_site_packages(path):
-            return False
-        return under(path, base_dir)
+        if info:
+            path = info[1] or ''
+            if path and not is_site_packages(path) and under(path, base_dir):
+                return True
+        # ② 项目目录里存在同名 .py（sys.path 注入 / 插件目录里的本地模块）
+        return mod in local_names
 
     def is_third_party(name, path):
         # 第三方：路径在 site-packages 里，或本身就是 .pyd 扩展模块
@@ -216,8 +318,13 @@ def main(entry, workpath):
         if under(path, base_dir):
             local_files.add(os.path.normpath(path))
     local_files.add(os.path.normpath(entry))  # 入口必扫
+    # 再加上项目目录下的全部 .py（含 PyInstaller 没收集到的 sys.path 注入目录）
+    for p in iter_project_py(base_dir):
+        local_files.add(os.path.normpath(p))
 
-    imports_src = {}  # 顶层 import 名 -> set(来源 "相对路径:行号")
+    imports_src = {}       # 顶层 import 名 -> set(来源 "相对路径:行号")
+    full_names = {}        # 顶层 import 名 -> set(代码里实际写的完整模块名)
+    optional_keys = set()  # 位于 try/except ImportError 里的来源（可选依赖）
     scanned = set()
     scanned_truncated = []
 
@@ -244,9 +351,43 @@ def main(entry, workpath):
         except Exception:
             rel = os.path.basename(path)
 
+        # 可选导入块：try: import x / except ImportError 之类。
+        # 这类依赖缺失时程序会自动走降级分支，报成"缺失依赖"只会让用户
+        # 去装一个用不上的包（uvloop / win32api / orjson 常用这种写法）。
+        opt_ranges = []
+        try_nodes = []
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Try) and n.handlers:
+                catches = False
+                for h in n.handlers:
+                    t = h.type
+                    names = []
+                    if t is None:
+                        catches = True
+                    elif isinstance(t, ast.Name):
+                        names = [t.id]
+                    elif isinstance(t, ast.Tuple):
+                        names = [e.id for e in t.elts if isinstance(e, ast.Name)]
+                    if any(x in ('ImportError', 'ModuleNotFoundError', 'Exception', 'BaseException') for x in names):
+                        catches = True
+                if catches:
+                    try_nodes.append(n)
+        for n in try_nodes:
+            start = n.lineno
+            end = start
+            for stmt in n.body:
+                end = max(end, getattr(stmt, 'end_lineno', start) or start)
+            opt_ranges.append((start, end))
+
         def record(mod, lineno):
             top = mod.split('.')[0]
-            imports_src.setdefault(top, set()).add('%s:%d' % (rel, lineno))
+            key = '%s:%d' % (rel, lineno)
+            imports_src.setdefault(top, set()).add(key)
+            # 记下完整模块名用于界面展示：import google.protobuf 显示成 "google"
+            # 会让人误以为是另一个包，展示完整名才能对上代码
+            full_names.setdefault(top, set()).add(mod)
+            if any(a <= lineno <= b for a, b in opt_ranges):
+                optional_keys.add(key)
 
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -286,14 +427,27 @@ def main(entry, workpath):
     except Exception:
         pass
 
-    def to_pkg(mod):
-        key = mod.lower()
-        pkg = MODULE_TO_PKG.get(key)
-        if pkg is None:
-            dists = pkgs_map.get(mod, [])
+    def to_pkg(mod, importable):
+        """模块名 -> pip 包名；无法确定时返回 None（它不是一个可安装的依赖）。
+
+        判定顺序：
+          1. pipreqs 官方映射（cv2 -> opencv-python、win32api -> pywin32 等）
+          2. 已装发行版声明的顶层模块（packages_distributions）
+          3. 都查不到但模块确实能导入 → 它是某个包的内部模块/命名空间包/编译扩展
+             （如 _yaml、win32ctypes），本身没有独立发行版。报成依赖只会让用户
+             装进一个同名野包，必须排除。
+          4. 都查不到且模块确实导入不了 → 真缺失，用模块名当包名作最佳猜测。
+        """
+        pkg = MODULE_TO_PKG.get(mod.lower())
+        if pkg:
+            return pkg
+        dists = pkgs_map.get(mod) or []
+        if dists:
             # 发行版名转小写，统一成 pip 可识别的规范名（如 "Requests" -> "requests"）
-            pkg = (dists[0] if dists else mod).lower()
-        return pkg
+            return dists[0].lower()
+        if importable:
+            return None
+        return mod
 
     def req_version(dists, pkg):
         for d in dists:
@@ -352,12 +506,18 @@ def main(entry, workpath):
             continue
         # 命中 Analysis 收集结果 或 环境可加载 → 已装；否则真缺失
         hit = hit_mod(imp) or has_module(imp)
-        pkg = to_pkg(imp)
+        # 全部来源都在 try/except ImportError 里 → 可选依赖，缺失时程序自带降级，不报
+        if not hit and srcs and all(k in optional_keys for k in srcs):
+            continue
+        pkg = to_pkg(imp, hit)
+        if pkg is None:
+            # 能导入、但没有任何发行版声明提供它 → 内部模块/命名空间包，不是依赖
+            continue
         g = groups_missing if not hit else groups_resolved
         gk = norm(pkg)
         if gk not in g:
             g[gk] = {"pkg": pkg, "mods": set(), "srcs": set()}
-        g[gk]["mods"].add(imp)
+        g[gk]["mods"].update(full_names.get(imp) or {imp})
         g[gk]["srcs"].update(srcs)
 
     def build_items(groups, installed_flag):
@@ -397,8 +557,8 @@ def main(entry, workpath):
             continue
         if is_local_mod(name) or not is_third_party(name, path):
             continue
-        pkg = to_pkg(top)
-        if norm(pkg) in ('pyinstaller', 'pyarmor'):
+        pkg = to_pkg(top, True)   # 钩子补充的都是已安装的模块
+        if pkg is None or norm(pkg) in ('pyinstaller', 'pyarmor'):
             continue
         gk = norm(pkg)
         if gk not in hook_groups:

@@ -137,6 +137,14 @@ func AnalyzeResourceDeps(pythonPath, entryScript string, resources []config.Reso
 			}
 		}
 
+		// 精度闸门：既不在磁盘上、也没被勾选、又不带任何目录的"裸名字"
+		// （parser.load('section')、client.copy('users')、NAME = 'settings.json'）
+		// 基本是函数参数/常量名，不是随包分发的资源。
+		// 带目录的（'assets/missing.png'）保留——那是"代码引用了但文件不存在"的真实问题。
+		if !exists && !resDepIncluded(resources, abs) && !strings.ContainsAny(ref, `/\`) {
+			continue
+		}
+
 		// join 拼接的"目录探测"处理（最后一段无扩展名，如 shu_config / _internal / ..）：
 		// 这类是代码的候选搜索路径，不是要打包的资源文件。
 		//  - .. 和 . 是路径跳转 → 直接忽略

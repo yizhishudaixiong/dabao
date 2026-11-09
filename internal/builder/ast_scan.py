@@ -121,15 +121,46 @@ def _is_write_mode(node):
     return bool(mode) and any(c in mode for c in 'wax')
 
 
-# 常见资源扩展名（赋值语句兜底判断用）
+# 常见资源扩展名（赋值语句/任意调用兜底判断用）。
+# 覆盖桌面程序真正会随包分发的文件：界面（qss/ui/qrc）、网页（html/css/js）、
+# 模型权重、字体、数据库、配置、素材等。
 RES_EXTS = {
-    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.svg', '.webp', '.tif', '.tiff',
-    '.json', '.yaml', '.yml', '.txt', '.csv', '.xml', '.ini', '.conf', '.cfg', '.toml',
-    '.xlsx', '.xls', '.doc', '.docx', '.pdf', '.zip', '.7z', '.rar', '.gz', '.tar',
-    '.wav', '.mp3', '.mp4', '.avi', '.mkv', '.mov', '.flv', '.ttf', '.otf',
-    '.db', '.sqlite', '.dat', '.bin', '.pkl', '.npy', '.npz', '.h5', '.hdf5',
-    '.onnx', '.pt', '.pth', '.weights', '.engine', '.dll', '.pyd', '.pem', '.crt', '.key',
+    # 图片
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.icns', '.cur', '.svg', '.webp',
+    '.tif', '.tiff', '.psd', '.tga',
+    # 界面 / 网页（PySide/PyQt 项目高频）
+    '.qss', '.qrc', '.ui', '.html', '.htm', '.css', '.js', '.map',
+    # 配置 / 数据
+    '.json', '.json5', '.yaml', '.yml', '.txt', '.csv', '.tsv', '.xml', '.ini', '.conf',
+    '.cfg', '.toml', '.env', '.properties', '.sql', '.db', '.sqlite', '.sqlite3', '.dat', '.bin',
+    # 文档 / 压缩
+    '.xlsx', '.xls', '.doc', '.docx', '.pdf', '.zip', '.7z', '.rar', '.gz', '.tar', '.bz2',
+    # 音视频 / 字幕
+    '.wav', '.mp3', '.ogg', '.flac', '.m4a', '.aac', '.mp4', '.avi', '.mkv', '.mov',
+    '.flv', '.webm', '.srt', '.vtt',
+    # 字体
+    '.ttf', '.otf', '.ttc', '.woff', '.woff2', '.eot',
+    # 模型 / 科学计算
+    '.pkl', '.pickle', '.joblib', '.npy', '.npz', '.h5', '.hdf5', '.onnx', '.pt', '.pth',
+    '.ckpt', '.safetensors', '.tflite', '.pb', '.pbtxt', '.mat', '.arff', '.msgpack',
+    '.weights', '.engine', '.gltf', '.glb', '.obj', '.fbx', '.stl',
+    # 本地化 / 二进制
+    '.mo', '.po', '.qm', '.dll', '.pyd', '.pem', '.crt', '.key',
 }
+
+def _has_res_ext(s):
+    """字符串是否带"资源文件"扩展名（且不是 URL）。
+
+    这是"任何函数调用/常量赋值"这两条兜底规则的准入条件：
+    只靠"带目录分隔符"会把正则、URL 路径段、日志文案一起捞进来。
+    """
+    if not s or len(s) > 400:
+        return False
+    if '://' in s:
+        return False  # URL 不是随包分发的资源
+    if any(c in s for c in '*?[}'):
+        return False  # glob 模式描述一批文件，不是某个具体资源
+    return os.path.splitext(s)[1].lower() in RES_EXTS
 
 
 def scan_file(path, root):
@@ -221,13 +252,25 @@ def scan_file(path, root):
                             'dynamic': True, 'kind': name, 'file_base': False,
                             'code': code_of(node)})
             continue
+
+        # 5. 任意其他调用：QIcon('assets/icon.png')、resource_path('data/config.json')、
+        #    load_ui('main.ui') 这类自定义封装——函数名不可枚举，只能看参数长得像不像路径。
+        #    这里放宽召回，最终由 Go 侧按"文件是否真实存在"过滤（不存在的裸名字一律丢弃），
+        #    否则 logging.info('report.csv') 这种会被当成资源报出来。
+        arg = node.args[0] if node.args else None
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str) \
+                and _has_res_ext(arg.value):
+            out.append({'ref': arg.value, 'file': rel, 'line': line,
+                        'dynamic': False, 'kind': 'call', 'file_base': False,
+                        'code': code_of(node)})
+        continue
     # 5. 字符串常量赋值（如 图标文件名 = 'logo.png'）：变量可能后续用于读取。
     #    仅当值以常见资源扩展名结尾才提取，避免普通文本误报。
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) \
                 and isinstance(node.value.value, str):
             val = node.value.value
-            if os.path.splitext(val)[1].lower() in RES_EXTS:
+            if _has_res_ext(val):
                 out.append({'ref': val, 'file': rel,
                             'line': getattr(node, 'lineno', 0),
                             'dynamic': False, 'kind': 'assign', 'file_base': False,

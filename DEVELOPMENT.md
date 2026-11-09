@@ -131,7 +131,10 @@ push 源码到码云
 - **单文件模式有 4GB 上限**（PyInstaller 归档限制），超了只能改多文件。
 - **PyArmor 试用版限制单代码对象 32KB**。超限文件跳过加密、明文打包并在日志里列出；入口脚本超限直接报错。失败归因只在 pyarmor 输出 `out of license` 时才按超限处理，其它错误原样上报。
 - **加密后必须把项目内所有本地模块补成 `--hidden-import`（递归，含子包）**。PyArmor 加密后 PyInstaller 读不到任何 import，导入图在每个加密模块处都断了；只补顶层模块时 `from pkg import widgets` 会在产物里报 `ImportError: cannot import name 'widgets'`。这条有端到端回归测试兜着（见第 10 节）。
-- **依赖分析缓存按「环境已装包指纹」分目录**。PyInstaller 的 `Analysis-00.toc` 只按已收集文件的 mtime 判断能否复用，新装的包不在旧清单里、不会让缓存失效——表现是「装上缺失包 → 重新分析仍拿旧清单」，加密打包就会漏收集。把 `名称==版本` 的哈希拼进缓存目录名，环境一变自动重分析，环境不变仍然秒回。
+- **依赖分析缓存靠「环境 + 源码」双指纹失效**。PyInstaller 的 `Analysis-00.toc` 只按已收集文件的 mtime 判断能否复用，两类变化它都看不见：新装的包不在旧清单里、`sys.path` 注入目录里的文件不在依赖图里。因此每次分析前算一个戳（已装包的 `名称==版本` 哈希 + 项目全部 `.py` 的 `路径:大小:mtime` 哈希），与上次不同就删掉 `Analysis-00.toc` 强制重新分析；完全没变仍然 0.9 秒命中。
+- **「本地依赖」按文件系统判定，不看 PyInstaller 收集结果**。`sys.path.append('lib')` 之后的 `import helpers`，PyInstaller 根本看不到（`lib` 不在 pathex 里），只看收集结果就会把 `helpers` 报成"缺失的 pip 包"，用户一装就装进同名野包。现在只要项目目录里存在同名 `.py` 就算本地模块。扫描范围同时扩到项目下**全部** `.py`（跳过 `tests/`、`docs/`、`examples/`、`setup.py`），否则注入目录里的真实依赖会整片漏掉。
+- **能导入但没有任何发行版声明提供的模块，不算依赖**。`_yaml`、`win32ctypes` 这类某个包的内部模块/编译扩展本身没有独立发行版，报成依赖只会让用户装到同名野包；反之"导入不了又查不到映射"才是真缺失，用模块名当包名作最佳猜测。`try: import x / except ImportError` 里的**可选依赖**缺失时程序自带降级，同样不报。
+- **资源分析对"候选"宽松、对"结论"严格**。候选阶段只要求参数是带资源扩展名的字符串（自定义封装 `resource_path('data/config.json')`、`QIcon('icon.png')` 才抓得到），结论阶段再用两条硬规则过滤：写入模式的 `open` 不算资源；既不在磁盘上、也没被勾选、又没有任何目录分隔符的裸名字（`parser.load('section')`、`NAME='settings.json'`）一律丢弃，而带目录的 `assets/missing.png` 会保留——那正是"引用了但文件不存在"的真实问题。
 - **打包命令行有长度上限**（Windows `CreateProcess` 32767 字符）。装了几百个包时 `--copy-metadata` + `--collect-all` + `--hidden-import` 很容易逼近上限，超了只会得到一句 `filename or extension is too long`。`fitCmdline` 在超长时优先丢弃 `--copy-metadata`（最不影响产物），仍超长则给出中文报错，绝不擅自删 hidden-import。
 - **UPX 会提高杀软误报率**，默认关闭。
 - **便携版下载没有校验和**（上游未提供 SHA256），只做总长度校验；下载走第三方 GitHub 代理，属于已知信任边界。
@@ -173,10 +176,10 @@ cd frontend && npx tsc --noEmit && npm run build
 | --- | --- |
 | `internal/env` | 全盘扫描语义：venv 识别、跳过名单、深度边界、符号链接 |
 | `internal/portable` | 分块覆盖完整性（含不能被 4 整除的大小）、端到端下载、断点续传、删除时的路径校验 |
-| `internal/builder` | 程序名称校验、加密前的 .py 收集规则（`environment/` 不被误跳）、加密时的本地模块递归收集、排除模块的生效范围、超长命令行裁剪、资源扫描（含 GBK 源码与 pathlib 的 `/` 拼接） |
+| `internal/builder` | 程序名称校验、加密前的 .py 收集规则（`environment/` 不被误跳）、加密时的本地模块递归收集、排除模块的生效范围、超长命令行裁剪、资源扫描准确率（GBK 源码、pathlib `/`、误报/漏报用例） |
 | `internal/fsx` | 路径归属、虚拟环境标志识别、跳过目录清单 |
 | `pypacker`（根包） | 路径归属判断、便携版标记 |
-| `internal/deps` | 错误诊断规则匹配 |
+| `internal/deps` | 错误诊断规则匹配、依赖分类准确率（本地模块/可选依赖/测试目录/包名映射） |
 
 需要真实打包 / 联网的端到端测试默认跳过，改动加密或分析链路时手动跑一遍：
 
