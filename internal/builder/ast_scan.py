@@ -22,7 +22,8 @@ try:
 except Exception:
     pass
 
-# 分析时跳过的目录（缓存 / 虚拟环境 / 构建产物）
+# 兜底清单：正常由 Go 侧通过第二个参数传入（internal/fsx 是唯一出处，避免两边走样），
+# 这里只用于手工单独运行本脚本的场景。
 SKIP_DIRS = {
     '__pycache__', '.venv', 'venv', 'venv_py', 'env', 'build', 'dist', '.git',
     'node_modules', '.idea', '.vscode', '.pytest_cache',
@@ -181,10 +182,16 @@ def scan_file(path, root):
 
 def main():
     root = sys.argv[1]
+    skip_dirs = {d.lower() for d in SKIP_DIRS}
+    if len(sys.argv) > 2 and sys.argv[2]:
+        try:
+            skip_dirs = {str(d).lower() for d in json.loads(sys.argv[2])}
+        except Exception:
+            pass
     results = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames
-                       if d not in SKIP_DIRS and not _is_venv(os.path.join(dirpath, d))]
+                       if d.lower() not in skip_dirs and not _is_venv(os.path.join(dirpath, d))]
         for fn in filenames:
             if fn.lower().endswith('.py'):
                 results.extend(scan_file(os.path.join(dirpath, fn), root))

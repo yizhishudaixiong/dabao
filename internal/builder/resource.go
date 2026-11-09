@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"pypacker/internal/config"
+	"pypacker/internal/fsx"
 )
 
 // ScanResources 列出程序目录下可作为资源一起打包的条目
@@ -35,15 +36,13 @@ func skipResource(path string, isDir bool) bool {
 	if strings.HasPrefix(name, ".") {
 		return true
 	}
-	switch name {
-	case "__pycache__", ".venv", "venv", "venv_py", "env", "build", "dist":
+	// 缓存 / 构建产物 / 依赖目录 / IDE 配置等一律不算资源
+	if fsx.IsNoiseDir(name) {
 		return true
 	}
-	if isDir {
-		// 任意命名的虚拟环境：根目录必有 pyvenv.cfg 标志文件
-		if fi, err := os.Stat(filepath.Join(path, "pyvenv.cfg")); err == nil && !fi.IsDir() {
-			return true
-		}
+	// 任意命名的虚拟环境：根目录必有 pyvenv.cfg 标志文件
+	if isDir && fsx.HasPyvenvCfg(path) {
+		return true
 	}
 	if !isDir && strings.EqualFold(filepath.Ext(name), ".py") {
 		return true

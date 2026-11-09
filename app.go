@@ -14,6 +14,7 @@ import (
 	"pypacker/internal/config"
 	"pypacker/internal/deps"
 	"pypacker/internal/env"
+	"pypacker/internal/fsx"
 	"pypacker/internal/paths"
 	"pypacker/internal/portable"
 	"pypacker/internal/version"
@@ -53,6 +54,12 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+}
+
+// emit 向前端推送事件。统一入口，避免各处散写 runtime.EventsEmit 后
+// 忘记传 ctx 或事件名拼错（事件名只有前端在用，写错不会编译报错）。
+func (a *App) emit(event string, data interface{}) {
+	runtime.EventsEmit(a.ctx, event, data)
 }
 
 // GetVersion 返回程序内部版本号（唯一来源：internal/version 包），供界面显示
@@ -144,9 +151,7 @@ func (a *App) DownloadPortablePython(version string) error {
 			}
 			a.mu.Unlock()
 		}()
-		emit := func(evt string, data interface{}) {
-			runtime.EventsEmit(a.ctx, evt, data)
-		}
+		emit := a.emit
 		dl := &portable.Downloader{
 			OnLog: func(line string) { emit("portable:log", line) },
 			OnDownload: func(done, total int64) {
@@ -196,15 +201,12 @@ func (a *App) DeletePortablePython(version string) error {
 
 // SelectCustomPython 弹出 Windows 文件选择框，让用户手动选择 python.exe
 func (a *App) SelectCustomPython() (*config.PythonEnv, error) {
-	file, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择 Python 可执行文件",
-		Filters: []runtime.FileFilter{
-			{DisplayName: "Python 可执行文件", Pattern: "*.exe"},
-			{DisplayName: "所有文件", Pattern: "*.*"},
-		},
-	})
+	file, err := a.pickFile("选择 Python 可执行文件",
+		runtime.FileFilter{DisplayName: "Python 可执行文件", Pattern: "*.exe"},
+		runtime.FileFilter{DisplayName: "所有文件", Pattern: "*.*"},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("打开文件选择框失败: %v", err)
+		return nil, err
 	}
 	if file == "" {
 		return nil, fmt.Errorf("未选择文件")
@@ -221,100 +223,66 @@ func (a *App) SelectCustomPython() (*config.PythonEnv, error) {
 // 便携版判断靠路径归属（%LOCALAPPDATA%\dabao\runtime 下），
 // 否则按路径还原/手动选择时会被显示成"物理环境"，丢失便携版标识。
 func decorateEnv(e *config.PythonEnv) {
-	if withinDir(e.Path, portable.RootDir()) {
+	if fsx.IsWithin(e.Path, portable.RootDir()) {
 		e.IsPortable = true
 	}
 	e.Name = env.DisplayName(e)
 }
 
-// withinDir 判断 path 是否位于 dir 之内（按路径层级，不做字符串前缀匹配）
-func withinDir(path, dir string) bool {
-	if path == "" || dir == "" {
-		return false
-	}
-	rel, err := filepath.Rel(dir, path)
+// pickFile 弹出文件选择框。用户取消时返回空串且不报错，由调用方决定是否提示。
+// 七个选择器原先各自复制一遍对话框参数与错误处理，统一到这里只需改一处。
+func (a *App) pickFile(title string, filters ...runtime.FileFilter) (string, error) {
+	file, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:   title,
+		Filters: filters,
+	})
 	if err != nil {
-		return false
+		return "", fmt.Errorf("打开文件选择框失败: %v", err)
 	}
-	return rel != "." && rel != ".." && !filepath.IsAbs(rel) &&
-		!strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return file, nil
+}
+
+// pickDir 弹出文件夹选择框。用户取消时返回空串且不报错。
+func (a *App) pickDir(title string) (string, error) {
+	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: title})
+	if err != nil {
+		return "", fmt.Errorf("打开文件夹选择框失败: %v", err)
+	}
+	return dir, nil
 }
 
 // SelectEntryScript 选择打包入口 .py 文件
 func (a *App) SelectEntryScript() (string, error) {
-	file, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择 Python 入口脚本",
-		Filters: []runtime.FileFilter{
-			{DisplayName: "Python 脚本", Pattern: "*.py"},
-			{DisplayName: "所有文件", Pattern: "*.*"},
-		},
-	})
-	if err != nil || file == "" {
-		return "", err
-	}
-	return file, nil
+	return a.pickFile("选择 Python 入口脚本",
+		runtime.FileFilter{DisplayName: "Python 脚本", Pattern: "*.py"},
+		runtime.FileFilter{DisplayName: "所有文件", Pattern: "*.*"},
+	)
 }
 
 // SelectIcon 选择程序图标（支持 .ico / .png / .jpg，非 ico 将自动转换）
 func (a *App) SelectIcon() (string, error) {
-	file, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择程序图标（.ico / .png / .jpg）",
-		Filters: []runtime.FileFilter{
-			{DisplayName: "图标文件", Pattern: "*.ico;*.png;*.jpg;*.jpeg"},
-			{DisplayName: "所有文件", Pattern: "*.*"},
-		},
-	})
-	if err != nil || file == "" {
-		return "", err
-	}
-	return file, nil
+	return a.pickFile("选择程序图标（.ico / .png / .jpg）",
+		runtime.FileFilter{DisplayName: "图标文件", Pattern: "*.ico;*.png;*.jpg;*.jpeg"},
+		runtime.FileFilter{DisplayName: "所有文件", Pattern: "*.*"},
+	)
 }
 
 // SelectOutputDir 选择最终 EXE 输出目录
-func (a *App) SelectOutputDir() (string, error) {
-	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择输出目录",
-	})
-	if err != nil || dir == "" {
-		return "", err
-	}
-	return dir, nil
-}
+func (a *App) SelectOutputDir() (string, error) { return a.pickDir("选择输出目录") }
 
 // SelectCustomRoot 弹出 Windows 文件夹选择框，选择自定义环境根目录
-func (a *App) SelectCustomRoot() (string, error) {
-	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择自定义环境根目录",
-	})
-	if err != nil || dir == "" {
-		return "", err
-	}
-	return dir, nil
-}
+func (a *App) SelectCustomRoot() (string, error) { return a.pickDir("选择自定义环境根目录") }
 
 // SelectResourceDir 弹出 Windows 文件夹选择框，选择一个文件夹作为打包资源
 func (a *App) SelectResourceDir() (string, error) {
-	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择要一起打包的文件夹",
-	})
-	if err != nil || dir == "" {
-		return "", err
-	}
-	return dir, nil
+	return a.pickDir("选择要一起打包的文件夹")
 }
 
 // SelectResourceFile 弹出 Windows 文件选择框，选择一个文件作为额外打包资源
 func (a *App) SelectResourceFile() (string, error) {
-	file, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择要一起打包的文件",
-		Filters: []runtime.FileFilter{
-			{DisplayName: "所有文件", Pattern: "*.*"},
-		},
-	})
-	if err != nil || file == "" {
-		return "", err
-	}
-	return file, nil
+	return a.pickFile("选择要一起打包的文件",
+		runtime.FileFilter{DisplayName: "所有文件", Pattern: "*.*"},
+	)
 }
 
 // AddResource 手动添加一个资源条目（文件夹或文件），供前端加入资源列表
@@ -351,24 +319,24 @@ func (a *App) AnalyzeDeps(entryScript, pythonPath, encryptMode, mirror string) (
 	// 全新环境未装时先自动补装，避免分析直接失败
 	pi, pv := deps.CheckInstalled(pythonPath, "pyinstaller")
 	if !pi {
-		runtime.EventsEmit(a.ctx, "deps:analysis-log", "分析引擎需要 PyInstaller（打包必需组件），正在自动安装…")
+		a.emit("deps:analysis-log", "分析引擎需要 PyInstaller（打包必需组件），正在自动安装…")
 		if err := deps.Install(pythonPath, []string{"pyinstaller"}, mirror, func(line string) {
-			runtime.EventsEmit(a.ctx, "deps:analysis-log", line)
+			a.emit("deps:analysis-log", line)
 		}, nil, nil); err != nil {
 			return nil, fmt.Errorf("自动安装 PyInstaller 失败：%v", err)
 		}
 		pi, pv = deps.CheckInstalled(pythonPath, "pyinstaller")
 	}
 	// 推送分析开始的阶段提示（首次分析约 5~15 秒，大项目 30~60 秒；重复分析秒回）
-	runtime.EventsEmit(a.ctx, "deps:analysis-log", "正在执行 PyInstaller 官方分析引擎…")
-	runtime.EventsEmit(a.ctx, "deps:progress", map[string]interface{}{"percent": 0, "stage": "启动分析引擎"})
+	a.emit("deps:analysis-log", "正在执行 PyInstaller 官方分析引擎…")
+	a.emit("deps:progress", map[string]interface{}{"percent": 0, "stage": "启动分析引擎"})
 	r, err := deps.Analyze(entryScript, pythonPath, func(line string) {
-		runtime.EventsEmit(a.ctx, "deps:analysis-log", line)
+		a.emit("deps:analysis-log", line)
 	})
 	if err != nil {
 		return nil, err
 	}
-	runtime.EventsEmit(a.ctx, "deps:progress", map[string]interface{}{"percent": 100, "stage": "分析完成"})
+	a.emit("deps:progress", map[string]interface{}{"percent": 100, "stage": "分析完成"})
 	// 必需依赖：PyInstaller 始终检查
 	mergeRequired(r, "pyinstaller", "pyinstaller", pi, pv)
 	// 用户选了代码加密时，PyArmor 也强制纳入
@@ -423,7 +391,7 @@ func (a *App) InstallDeps(pythonPath string, pkgs []string, mirror string) error
 	}()
 	a.markBusy()
 	return deps.Install(pythonPath, pkgs, mirror, func(line string) {
-		runtime.EventsEmit(a.ctx, "deps:log", line)
+		a.emit("deps:log", line)
 	}, a.emitDepsProgress, ch)
 }
 
@@ -474,14 +442,14 @@ func (a *App) ConfirmExit() {
 
 // emitDepsProgress 向界面推送依赖安装进度（百分比 + 阶段说明）
 func (a *App) emitDepsProgress(percent int, stage string) {
-	runtime.EventsEmit(a.ctx, "deps:progress", map[string]interface{}{"percent": percent, "stage": stage})
+	a.emit("deps:progress", map[string]interface{}{"percent": percent, "stage": stage})
 }
 
 // CreateVenv 使用物理 Python 新建虚拟环境，返回新建环境的完整信息。
 // 说明：虚拟环境版本 = 物理 Python 版本；创建的环境会保留在所选路径，由用户自行管理。
 func (a *App) CreateVenv(basePython, venvPath string) (config.PythonEnv, error) {
 	return env.CreateVenv(basePython, venvPath, func(line string) {
-		runtime.EventsEmit(a.ctx, "deps:log", line)
+		a.emit("deps:log", line)
 	}, a.emitDepsProgress)
 }
 
@@ -522,9 +490,7 @@ func (a *App) CancelBuild() {
 
 // doBuild 实际执行打包：临时工作区 -> 打包 -> 收集产物 -> 清理
 func (a *App) doBuild(cfg config.BuildConfig, cancel chan struct{}) {
-	emit := func(evt string, data interface{}) {
-		runtime.EventsEmit(a.ctx, evt, data)
-	}
+	emit := a.emit
 	emitLog := func(line string) {
 		emit("build:log", line)
 	}

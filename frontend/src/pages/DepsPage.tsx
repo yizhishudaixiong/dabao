@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Badge, Button, Card, Seg } from '../components/ui'
+import { Badge, Button, Card, ChipInput, Seg } from '../components/ui'
 import LogPanel from '../components/LogPanel'
 import type { BuildConfig, DepInfo, DepsResult } from '../types/models'
 
@@ -79,8 +79,6 @@ export default function DepsPage({
     mirrorKeyOf(cfg.pipMirror) === '__custom__' ? cfg.pipMirror : '',
   )
   const [msg, setMsg] = useState('')
-  const [hiddenInput, setHiddenInput] = useState('')
-  const [excludeInput, setExcludeInput] = useState('')
 
   const ready = !!cfg.entryScript && !!cfg.pythonPath
   // 是否需要 PyArmor：用户选了代码加密档
@@ -130,13 +128,11 @@ export default function DepsPage({
   }
 
   // 添加一个手动补充的隐式依赖导入模块（动态导入/插件式加载，静态分析发现不了）
-  const addHidden = () => {
-    const name = hiddenInput.trim()
-    if (!name) return
+  // 输入框状态在 ChipInput 内部，这里只处理「去重 + 写入配置」
+  const addHidden = (name: string) => {
     if (!cfg.hiddenImports.some((h) => h.toLowerCase() === name.toLowerCase())) {
       updateCfg({ hiddenImports: [...cfg.hiddenImports, name] })
     }
-    setHiddenInput('')
   }
 
   // 移除一个隐式依赖导入模块
@@ -145,13 +141,10 @@ export default function DepsPage({
   }
 
   // 添加一个要排除的模块（打包时 --exclude-module，缩小体积）
-  const addExclude = () => {
-    const name = excludeInput.trim()
-    if (!name) return
+  const addExclude = (name: string) => {
     if (!cfg.excludeModules.some((m) => m.toLowerCase() === name.toLowerCase())) {
       updateCfg({ excludeModules: [...cfg.excludeModules, name] })
     }
-    setExcludeInput('')
   }
 
   // 移除一个要排除的模块
@@ -397,42 +390,13 @@ export default function DepsPage({
           title="隐式依赖导入"
           desc="补充动态导入/插件式加载等静态分析无法发现的隐式依赖，打包时作为 --hidden-import 传给 PyInstaller"
         >
-          <div className="flex gap-2">
-            <input
-              className="field flex-1"
-              placeholder="输入模块名，如：win32api、scipy.optimize"
-              value={hiddenInput}
-              onChange={(e) => setHiddenInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') addHidden()
-              }}
-            />
-            <Button variant="primary" onClick={addHidden} disabled={!hiddenInput.trim()}> ＋ 添加</Button>
-          </div>
-          {cfg.hiddenImports.length > 0 ? (
-            <ul className="mt-3 flex flex-wrap gap-2">
-              {cfg.hiddenImports.map((h) => (
-                <li
-                  key={h}
-                  className="flex items-center gap-1.5 rounded-full border border-line bg-surface-raised px-3 py-1 text-xs text-ink"
-                >
-                  {h}
-                  <button
-                    type="button"
-                    className="text-ink-faint transition-colors hover:text-danger"
-                    onClick={() => removeHidden(h)}
-                    aria-label={`移除 ${h}`}
-                  >
-                    ✕
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-3 text-xs text-ink-faint">
-              暂无。仅当程序使用变量动态导入（如 importlib.import_module(变量)）或按名称加载插件时才需要补充。
-            </p>
-          )}
+          <ChipInput
+            placeholder="输入模块名，如：win32api、scipy.optimize"
+            items={cfg.hiddenImports}
+            onAdd={addHidden}
+            onRemove={removeHidden}
+            emptyHint="暂无。仅当程序使用变量动态导入（如 importlib.import_module(变量)）或按名称加载插件时才需要补充。"
+          />
         </Card>
       )}
 
@@ -441,43 +405,18 @@ export default function DepsPage({
           title="排除模块"
           desc="排除你确信用不到的重型库（如 torch、matplotlib、pandas），打包时跳过它们以明显减小体积"
         >
-          <div className="flex gap-2">
-            <input
-              className="field flex-1"
-              placeholder="输入模块名，如：torch、matplotlib、pandas"
-              value={excludeInput}
-              onChange={(e) => setExcludeInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') addExclude()
-              }}
-            />
-            <Button variant="primary" onClick={addExclude} disabled={!excludeInput.trim()}> ＋ 添加</Button>
-          </div>
-          {cfg.excludeModules.length > 0 ? (
-            <ul className="mt-3 flex flex-wrap gap-2">
-              {cfg.excludeModules.map((m) => (
-                <li
-                  key={m}
-                  className="flex items-center gap-1.5 rounded-full border border-line bg-surface-raised px-3 py-1 text-xs text-ink"
-                >
-                  {m}
-                  <button
-                    type="button"
-                    className="text-ink-faint transition-colors hover:text-danger"
-                    onClick={() => removeExclude(m)}
-                    aria-label={`移除 ${m}`}
-                  >
-                    ✕
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-3 text-xs text-ink-faint">
-              暂无排除项。{' '}
-              <span className="text-warn">只排除确认用不到的库，否则打包后的程序可能报「缺少模块」。</span>
-            </p>
-          )}
+          <ChipInput
+            placeholder="输入模块名，如：torch、matplotlib、pandas"
+            items={cfg.excludeModules}
+            onAdd={addExclude}
+            onRemove={removeExclude}
+            emptyHint={
+              <>
+                暂无排除项。{' '}
+                <span className="text-warn">只排除确认用不到的库，否则打包后的程序可能报「缺少模块」。</span>
+              </>
+            }
+          />
         </Card>
       )}
 

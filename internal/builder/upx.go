@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"pypacker/internal/fsx"
 	"pypacker/internal/paths"
 )
 
@@ -17,7 +18,7 @@ import (
 // - 程序目录内：保留相对入口脚本目录的层级（文件取相对路径；文件夹取相对路径本身）
 // - 程序目录外（额外添加）：文件放资源根（文件名）；文件夹保留文件夹本身及内部结构（文件夹名）
 func resourceTarget(abs, projDir string, isDir bool) string {
-	if projDir != "" && isWithin(abs, projDir) {
+	if projDir != "" && fsx.IsWithin(abs, projDir) {
 		rel, err := filepath.Rel(projDir, abs)
 		if err == nil && rel != "." && rel != ".." && !filepath.IsAbs(rel) {
 			return rel

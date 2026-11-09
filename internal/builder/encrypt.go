@@ -11,6 +11,7 @@ import (
 	"pypacker/internal/config"
 	"pypacker/internal/deps"
 	"pypacker/internal/errhint"
+	"pypacker/internal/fsx"
 )
 
 // licenseLimitRe 匹配 PyArmor 试用版的容量限制报错。
@@ -204,15 +205,14 @@ func collectProjectPyFiles(root string) ([]string, error) {
 			if path == root {
 				return nil
 			}
-			// 固定噪音目录直接跳过
-			switch name {
-			case "__pycache__", "venv", ".venv", ".git", "build", "dist", "site-packages":
+			// 噪音目录（缓存 / 构建产物 / 依赖目录等）清单统一由 internal/fsx 维护
+			if fsx.IsNoiseDir(name) {
 				return filepath.SkipDir
 			}
 			// 任意命名的虚拟环境按 pyvenv.cfg 标志识别。
-			// 不能用 strings.HasPrefix(name, "env") 猜：那样会把用户自己的
-			// environment/、envs/ 等代码目录一起跳过，导致这些文件漏加密（明文进包）。
-			if _, err := os.Stat(filepath.Join(path, "pyvenv.cfg")); err == nil {
+			// 不能用名字前缀猜：那样会把用户自己的 environment/、envs/ 等代码目录
+			// 一起跳过，导致这些文件漏加密（明文进包）。
+			if fsx.HasPyvenvCfg(path) {
 				return filepath.SkipDir
 			}
 			return nil

@@ -12,6 +12,7 @@ import (
 
 	"pypacker/internal/cmdutil"
 	"pypacker/internal/config"
+	"pypacker/internal/fsx"
 	"pypacker/internal/paths"
 )
 
@@ -239,19 +240,10 @@ func (w *Workspace) Cleanup() error {
 	tempBase := paths.TempRoot()
 	clean := filepath.Clean(w.Root)
 	base := filepath.Clean(tempBase)
-	if !isWithin(clean, base) {
+	if !fsx.IsWithin(clean, base) {
 		return fmt.Errorf("安全校验失败：拒绝删除非受管路径 %s", w.Root)
 	}
 	return os.RemoveAll(clean)
-}
-
-// isWithin 判断 child 是否位于 parent 之内（路径前缀 + 分隔符边界）
-func isWithin(child, parent string) bool {
-	rel, err := filepath.Rel(parent, child)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // copyFile 流式复制文件。

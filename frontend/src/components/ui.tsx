@@ -1,4 +1,4 @@
-import React, { type ReactNode, type SelectHTMLAttributes, type InputHTMLAttributes } from 'react'
+import React, { useState, type ReactNode, type SelectHTMLAttributes, type InputHTMLAttributes } from 'react'
 
 /* ---------- Card ---------- */
 export function Card({
@@ -231,5 +231,72 @@ export function Modal({
         {children}
       </div>
     </div>
+  )
+}
+
+/* ---------- ChipInput：输入 + 回车/按钮添加 + 可删除标签列表 ----------
+   依赖页的「隐式依赖导入」和「排除模块」两块内容几乎完全一样（输入框、添加按钮、
+   标签列表、空状态提示），区别只有文案与数据源，抽成一个组件避免复制两份。 */
+export function ChipInput({
+  placeholder,
+  items,
+  onAdd,
+  onRemove,
+  emptyHint,
+}: {
+  placeholder: string
+  items: string[]
+  onAdd: (value: string) => void
+  onRemove: (value: string) => void
+  emptyHint: ReactNode
+}) {
+  const [value, setValue] = useState('')
+
+  const submit = () => {
+    const v = value.trim()
+    if (!v) return
+    onAdd(v)
+    setValue('')
+  }
+
+  return (
+    <>
+      <div className="flex gap-2">
+        <input
+          className="field flex-1"
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit()
+          }}
+        />
+        <Button variant="primary" onClick={submit} disabled={!value.trim()}>
+          ＋ 添加
+        </Button>
+      </div>
+      {items.length > 0 ? (
+        <ul className="mt-3 flex flex-wrap gap-2">
+          {items.map((it) => (
+            <li
+              key={it}
+              className="flex items-center gap-1.5 rounded-full border border-line bg-surface-raised px-3 py-1 text-xs text-ink"
+            >
+              {it}
+              <button
+                type="button"
+                className="text-ink-faint transition-colors hover:text-bad"
+                onClick={() => onRemove(it)}
+                aria-label={`移除 ${it}`}
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-3 text-xs text-ink-faint">{emptyHint}</p>
+      )}
+    </>
   )
 }

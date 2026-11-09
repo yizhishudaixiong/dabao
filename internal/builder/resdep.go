@@ -11,6 +11,7 @@ import (
 
 	"pypacker/internal/cmdutil"
 	"pypacker/internal/config"
+	"pypacker/internal/fsx"
 )
 
 // 资源依赖静态分析：用 Python AST 解析程序目录下所有 .py 的"读取类调用"
@@ -60,7 +61,10 @@ func AnalyzeResourceDeps(pythonPath, entryScript string, resources []config.Reso
 	if py == "" {
 		py = "python"
 	}
-	out, err := cmdutil.Command(py, tmpName, entryDir).Output()
+	// 跳过目录清单从 Go 侧传入：与 env / builder 共用 internal/fsx 里的同一份定义，
+	// 不再由 Python 脚本单独维护（两份清单迟早会走样）
+	skipJSON, _ := json.Marshal(fsx.NoiseDirNames())
+	out, err := cmdutil.Command(py, tmpName, entryDir, string(skipJSON)).Output()
 	if err != nil {
 		return nil, fmt.Errorf("资源分析执行失败: %v", err)
 	}
@@ -170,12 +174,11 @@ func findSameName(rootDir, name string) string {
 		}
 		if d.IsDir() {
 			if path != rootDir {
-				if skipScanDirs[d.Name()] {
+				if fsx.IsNoiseDir(d.Name()) {
 					return filepath.SkipDir
 				}
-				// Python 3.3+ 虚拟环境根目录必有 pyvenv.cfg（venv_py / venv312 等
-				// 任意命名），按标志文件识别，避免在第三方库里误找同名资源
-				if _, err := os.Stat(filepath.Join(path, "pyvenv.cfg")); err == nil {
+				// 虚拟环境按 pyvenv.cfg 识别（任意命名都能跳过），避免在第三方库里误找同名资源
+				if fsx.HasPyvenvCfg(path) {
 					return filepath.SkipDir
 				}
 			}
@@ -190,13 +193,6 @@ func findSameName(rootDir, name string) string {
 	return found
 }
 
-// 分析时跳过的目录（缓存 / 虚拟环境 / 构建产物等）
-var skipScanDirs = map[string]bool{
-	"__pycache__": true, ".venv": true, "venv": true, "venv_py": true, "env": true,
-	"build": true, "dist": true, ".git": true, "node_modules": true,
-	".idea": true, ".vscode": true, ".pytest_cache": true,
-}
-
 // resDepIncluded 判断绝对路径是否已被勾选的资源覆盖（精确匹配或位于已勾选文件夹内）
 func resDepIncluded(resources []config.ResourceItem, abs string) bool {
 	clean := filepath.Clean(abs)
@@ -207,11 +203,8 @@ func resDepIncluded(resources []config.ResourceItem, abs string) bool {
 		if strings.EqualFold(filepath.Clean(r.Path), clean) {
 			return true
 		}
-		if r.IsDir {
-			rel, err := filepath.Rel(r.Path, clean)
-			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				return true
-			}
+		if r.IsDir && fsx.IsWithin(clean, r.Path) {
+			return true
 		}
 	}
 	return false

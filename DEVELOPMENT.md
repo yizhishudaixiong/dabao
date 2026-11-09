@@ -33,9 +33,11 @@ dabao/
 └─ internal/
    ├─ builder/                打包流水线：参数组装、执行、加密、图标、资源、诊断
    ├─ deps/                   依赖分析（PyInstaller 官方引擎）、pip 安装、错误诊断
+   │  └─ analyze.py           分析脚本本体（go:embed 进二进制，运行时写到临时文件执行）
    ├─ env/                    环境搜索 / 检测 / 虚拟环境创建
    ├─ portable/               内置便携版 Python：下载、解压、校验、删除
    ├─ errhint/                "原因 + 建议 + 最近输出"诊断框架（规则表驱动）
+   ├─ fsx/                    文件系统通用判断：路径归属、虚拟环境标志、跳过目录清单
    ├─ cmdutil/                子进程封装（隐藏窗口 + 强制 UTF-8）
    ├─ paths/                  数据目录约定（%LOCALAPPDATA%\dabao、%TEMP%\PythonPackTool）
    └─ version/                版本号唯一来源
@@ -54,10 +56,13 @@ dabao/
 | 环境 | `env/search.go`、`venv.go` | 分层搜索、检测（一次子进程拿全信息）、建虚拟环境 |
 | 便携版 | `portable/portable.go` | 国内代理 + 4 线程分块 + 断点续传 + 解压校验 |
 | 诊断 | `errhint/` + 三张规则表 | 打包 / pip / 分析三类失败，统一输出中文原因与建议 |
+| 通用判断 | `fsx/` | 路径归属（`IsWithin`）、虚拟环境标志（`HasPyvenvCfg`）、跳过目录清单（`IsNoiseDir` / `IsSystemJunkDir`） |
 
 ### 常见扩展点
 
 **加一条错误诊断规则**：在 `builder/explain.go` 的 `buildRules`（或 `deps/explain.go` 的 `pipRules` / `analyzeRules`）里按优先级插入一条 `{Keywords: []string{"..."}, Reason: "...", Advice: "..."}`。关键词会先转小写再子串匹配；需要提取细节（如模块名）时用 `Regex`，并在 `Reason` 里用 `{1}` 占位。
+
+**调整扫描要跳过的目录**：只改 `internal/fsx/fsx.go` 里的 `noiseDirs`（项目内扫描）或 `systemJunkDirs`（全盘扫描）。资源分析脚本（`builder/ast_scan.py`）的清单由 Go 侧传入，不需要另改。
 
 **加一个可下载的便携版 Python**：改 `internal/portable/portable.go` 顶部的 `releaseTag`（python-build-standalone 的 release 标签，格式如 `20260901`）与 `Versions()` 列表；`SizeMB` 只用于界面展示。
 
@@ -147,7 +152,7 @@ push 源码到码云
 2. **用 `StdoutPipe` 时先读完输出、再 `cmd.Wait()`**。`Wait` 会关闭管道，反过来会把末尾几行吞掉——而报错信息恰好都在末尾。
 3. **大文件禁止 `os.ReadFile` 整读**，用 `io.Copy`（单文件产物可达 GB 级）。
 4. **错误提示走 `errhint`**：新增一条规则就加到对应规则表，别在业务代码里散写中文提示。
-5. **涉及删除 / 写出的路径必须校验归属**：`Workspace.Cleanup` 校验临时根目录、`portable.Delete` 校验版本号格式与目标前缀、`validateAppName` 校验程序名——名称会参与 `filepath.Join(输出目录, name+".exe")`。
+5. **路径归属与"跳过哪些目录"统一用 `internal/fsx`**，不要各写一份：判断子路径用 `fsx.IsWithin`（不能用字符串前缀），识别虚拟环境用 `fsx.HasPyvenvCfg`，扫描跳过用 `IsNoiseDir` / `IsSystemJunkDir`。删除 / 写出路径前必须校验归属（`Workspace.Cleanup`、`portable.Delete`、`validateAppName`）。
 6. **前端日志用 `lib/useLogs.ts` 的 `useLogBuffer`**，不要 `setState(prev => [...prev, line])`：那是 O(n²) 拷贝 + 每行一次整页重渲染。
 7. **界面文案必须与后端实际行为一致**（例如加密档位说明只能写实际启用的 `--enable-jit`，不能把没启用的 restrict 选项写上去）。
 8. **注释写"为什么"**，尤其是反直觉的地方（比如"为什么这里不能缓存""为什么先读后 Wait"）。
@@ -166,6 +171,7 @@ cd frontend && npx tsc --noEmit && npm run build
 | `internal/env` | 全盘扫描语义：venv 识别、跳过名单、深度边界、符号链接 |
 | `internal/portable` | 分块覆盖完整性（含不能被 4 整除的大小）、端到端下载、断点续传、删除时的路径校验 |
 | `internal/builder` | 程序名称校验、加密前的 .py 收集规则（`environment/` 不被误跳） |
+| `internal/fsx` | 路径归属、虚拟环境标志识别、跳过目录清单 |
 | `pypacker`（根包） | 路径归属判断、便携版标记 |
 | `internal/deps` | 错误诊断规则匹配 |
 

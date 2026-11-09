@@ -12,6 +12,7 @@ import (
 
 	"pypacker/internal/cmdutil"
 	"pypacker/internal/config"
+	"pypacker/internal/fsx"
 	"pypacker/internal/paths"
 )
 
@@ -366,23 +367,6 @@ func scanCommonDirs() []string {
 	return out
 }
 
-// skipDriveDirs 全盘扫描时跳过的无关/超大目录名（大小写不敏感）：
-// Windows 系统目录、回收站、各类依赖与缓存目录。
-// Program Files / AppData 不在此列（里面也可能装 Python），
-// 遍历深度统一由 driveMaxDepth 限制控制。
-var skipDriveDirs = map[string]bool{
-	"windows":                   true,
-	"$recycle.bin":              true,
-	"system volume information": true,
-	"recovery":                  true,
-	"node_modules":              true,
-	"site-packages":             true,
-	".git":                      true,
-	"__pycache__":               true,
-	"build":                     true,
-	"dist":                      true,
-}
-
 // driveMaxDepth 全盘扫描的最大深度（root 的直接子目录为第 1 层）。
 // 7 层是实测的性价比拐点：能覆盖 Windows 默认的"仅为当前用户安装"位置
 // （Users\名\AppData\Local\Programs\Python\Python3xx，第 7 层）以及 conda 环境等
@@ -490,7 +474,9 @@ func scanDir(dir string, depth, maxDepth int) []string {
 		return nil
 	}
 	name := strings.ToLower(filepath.Base(dir))
-	if strings.HasPrefix(name, ".") || skipDriveDirs[name] {
+	// 跳过清单统一由 internal/fsx 维护（含 Windows 系统目录、回收站、各类缓存/依赖目录）。
+	// Program Files / AppData 不在此列（里面也可能装 Python），深度由 driveMaxDepth 控制。
+	if strings.HasPrefix(name, ".") || fsx.IsNoiseDir(name) || fsx.IsSystemJunkDir(name) {
 		return nil
 	}
 	var out []string
@@ -562,9 +548,8 @@ func scanVirtualEnvs(root string) []venvFound {
 				}
 				return filepath.SkipDir
 			}
-			// 跳过常见的无关大目录，加速扫描
-			switch d.Name() {
-			case "site-packages", "node_modules", ".git", "__pycache__":
+			// 跳过常见的无关大目录，加速扫描（清单与其它模块共用 internal/fsx）
+			if fsx.IsNoiseDir(d.Name()) {
 				return filepath.SkipDir
 			}
 		}
