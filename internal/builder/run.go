@@ -134,6 +134,12 @@ func (w *Workspace) Run(cfg *config.BuildConfig, onLog func(string), cancel <-ch
 		onLog("")
 		onLog(buildArtifactReport(cfg, w.Root))
 	}
+	// 产物里是否缺模块：PyInstaller 只把它写进 warn-*.txt，构建本身仍算成功，
+	// 但这样的产物一启动就 ModuleNotFoundError，必须在收尾时明确提示一次。
+	if msg := missingModulesReport(w.Root, cfg); msg != "" && onLog != nil {
+		onLog("")
+		onLog(msg)
+	}
 
 	// 「打包缓存加速」关闭时：打包完成后删除 PyInstaller 全局编译缓存（bincache），
 	// 保证下次打包也不受旧缓存影响。只删 %LOCALAPPDATA%\pyinstaller，绝不触碰用户 Python 环境 / 工具自身分析缓存。
@@ -206,7 +212,6 @@ func formatSize(b int64) string {
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
-
 
 // CollectArtifact 将最终产物从工作区收集到用户指定输出目录。
 // 单文件 -> 拷贝 dist/<name>.exe；多文件 -> 拷贝整个 dist/<name> 目录。
