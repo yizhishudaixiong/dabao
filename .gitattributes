@@ -1,0 +1,2 @@
+# 流水线脚本必须是 LF：Linux 容器里 CRLF 会让 bash 报 $'\r': command not found
+*.sh text eol=lf

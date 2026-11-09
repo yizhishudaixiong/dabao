@@ -32,12 +32,7 @@ jobs:
           export PATH="$PATH:$(go env GOPATH)/bin"
 
       - name: 同步版本号到 Windows 资源信息
-        run: |
-          VER=$(grep -oP 'Version\s*=\s*"\K[^"]+' internal/version/version.go)
-          if [ -z "$VER" ]; then echo "无法从 version.go 读取版本号"; exit 1; fi
-          echo "检测到版本号: $VER"
-          sed -i -E "s/(\"file_version\": \")[^\"]*\"/\1${VER}.0\"/; s/(\"product_version\": \")[^\"]*\"/\1${VER}.0\"/; s/(\"FileVersion\": \")[^\"]*\"/\1${VER}.0\"/; s/(\"ProductVersion\": \")[^\"]*\"/\1${VER}.0\"/" build/windows/info.json
-          cat build/windows/info.json
+        run: bash build/sync-version.sh
 
       - name: 构建 Windows 混淆版 exe
         run: |

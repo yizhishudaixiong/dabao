@@ -118,7 +118,9 @@ push 源码到码云
                   编译 → 发布到 GitHub Releases
 ```
 
-两条流水线都会在构建前**把版本号同步进 `build/windows/info.json`**（`file_version` / `product_version` / `FileVersion` / `ProductVersion`）。漏掉这一步的话，exe 属性里显示的还是旧版本号——这个坑踩过，现在由脚本兜住。
+两条流水线都会在构建前**把版本号同步进 `build/windows/info.json`**（`file_version` / `product_version` / `FileVersion` / `ProductVersion`）。漏掉这一步的话，exe 属性里显示的还是旧版本号——这个坑踩过，现在由 `build/sync-version.sh` 兜住，脚本末尾还会校验四个字段确实写进去了。
+
+**流水线的命令不要写带转义引号的 sed。** 码云 Gitee Go 会把 `commands` 列表拼成 `/opt/COMMAND.sh` 再执行，这个过程会把 YAML 单引号里的反斜杠转义引号折叠成普通引号，于是 sed 表达式里的引号提前闭合，报 `syntax error near unexpected token`（构建在版本同步这一步就失败，Tag 与 Release 都不会产生）。凡是带引号的复杂命令，一律写进仓库脚本再由流水线 `bash xxx.sh` 调用——本地 Git Bash 也能直接跑，便于先验证。
 
 流水线依赖（已一次性配置）：码云 `RELEASE_TOKEN` 变量、码云仓库镜像的 GitHub 私人令牌（含 `Contents`、`Workflows` 权限）。
 

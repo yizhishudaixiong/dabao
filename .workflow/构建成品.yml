@@ -36,10 +36,9 @@ stages:
     - node -v
     - npm -v
     - echo "== 同步版本号到 info.json =="
-    - "VER=$(grep -oP 'Version\\s*=\\s*\"\\K[^\"]+' internal/version/version.go)"
-    - 'if [ -z "$VER" ]; then echo "无法从 version.go 读取版本号"; exit 1; fi'
-    - 'sed -i -E "s/(\"file_version\": \")[^"]*\"/\1${VER}.0\"/; s/(\"product_version\": \")[^"]*\"/\1${VER}.0\"/; s/(\"FileVersion\": \")[^"]*\"/\1${VER}.0\"/; s/(\"ProductVersion\": \")[^"]*\"/\1${VER}.0\"/" build/windows/info.json'
-    - cat build/windows/info.json
+    # 逻辑放在 build/sync-version.sh：Gitee Go 会把 commands 拼成 COMMAND.sh，
+    # YAML 单引号内的 \" 会被折叠成普通引号，sed 表达式因此被拆散而报 syntax error
+    - bash build/sync-version.sh
     - echo "== 构建 Windows exe（混淆版）=="
     - wails build -platform windows/amd64 -obfuscated -trimpath -ldflags "-s -w" -garbleargs "-tiny -seed=random"
     - ls -la build/bin
