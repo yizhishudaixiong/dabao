@@ -2,7 +2,8 @@
 // 产品名 / 作者 / 版本号由后端 internal/version 提供（界面右上角显示）
 
 // 发布工具的帖子地址（关于弹窗中"更新帖子"按钮打开）
-export const APP_POST_URL = 'https://www.52pojie.cn/thread-2125094-1-1.html'
+// 换帖时只改这里；用户在旧版里点这个按钮会打开这里配置的地址
+export const APP_POST_URL = 'https://www.52pojie.cn/thread-2136490-1-1.html'
 
 // 开源项目地址（关于弹窗中"开源项目"按钮打开）
 export const APP_REPO_URL = 'https://github.com/yizhishudaixiong/dabao'
