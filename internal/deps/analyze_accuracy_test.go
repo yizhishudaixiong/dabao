@@ -35,6 +35,7 @@ func TestAnalyzeClassifiesLocalAndThirdParty(t *testing.T) {
 	}
 	write("main.py", strings.Join([]string{
 		"import os, sys",
+		"from typing import TYPE_CHECKING",
 		"sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))",
 		"import helpers",         // 本地模块（lib/ 注入）——不能报成 pip 包
 		"from app import window", // 本地包——不能报成 pip 包
@@ -81,7 +82,7 @@ func TestAnalyzeClassifiesLocalAndThirdParty(t *testing.T) {
 	}
 	// fitz 只是模块名，PyPI 上并不存在可用的 fitz 包，必须映射成 PyMuPDF
 	mustNotHave := []string{"helpers", "app", "ns", "zzz_test_only", "zzz_docs_only",
-		"zzz_optional_pkg", "fitz"}
+		"zzz_optional_pkg", "zzz_type_only", "zzz_dead", "fitz"}
 	for _, p := range mustNotHave {
 		if seen[p] {
 			t.Errorf("误报 %q：本地模块/测试目录里的 import 不应成为依赖", p)

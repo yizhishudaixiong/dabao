@@ -389,7 +389,7 @@ def main(entry, workpath):
         # 这类依赖缺失时程序会自动走降级分支，报成"缺失依赖"只会让用户
         # 去装一个用不上的包（uvloop / win32api / orjson 常用这种写法）。
         opt_ranges = []
-        try_nodes = []
+        optional_nodes = []
         for n in ast.walk(tree):
             if isinstance(n, ast.Try) and n.handlers:
                 catches = False
@@ -405,8 +405,19 @@ def main(entry, workpath):
                     if any(x in ('ImportError', 'ModuleNotFoundError', 'Exception', 'BaseException') for x in names):
                         catches = True
                 if catches:
-                    try_nodes.append(n)
-        for n in try_nodes:
+                    optional_nodes.append(n)
+            elif isinstance(n, ast.If):
+                # 类型检查块（if TYPE_CHECKING:）只在静态检查时成立，运行期不会执行；
+                # if False: 同理是死代码。这两处的 import 都不是运行依赖。
+                t = n.test
+                is_static_only = (
+                    (isinstance(t, ast.Name) and t.id == 'TYPE_CHECKING')
+                    or (isinstance(t, ast.Attribute) and t.attr == 'TYPE_CHECKING')
+                    or (isinstance(t, ast.Constant) and not t.value)
+                )
+                if is_static_only:
+                    optional_nodes.append(n)
+        for n in optional_nodes:
             start = n.lineno
             end = start
             for stmt in n.body:
