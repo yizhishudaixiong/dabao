@@ -104,8 +104,12 @@ func TestExcludedModule(t *testing.T) {
 	if !excludedModule(ex, "torch") || !excludedModule(ex, "torch.nn") {
 		t.Error("排除 torch 应同时挡住 torch 的子模块")
 	}
-	if !excludedModule(ex, "matplotlib") {
-		t.Error("排除 matplotlib.pyplot 时应连带挡掉父包 matplotlib")
+	// 反过来不成立：排除子模块不能让整个父包被跳过，否则加密产物会整包缺失
+	if excludedModule(ex, "matplotlib") {
+		t.Error("排除 matplotlib.pyplot 不应把父包 matplotlib 也判为排除")
+	}
+	if !excludedModule(ex, "matplotlib.pyplot.figure") {
+		t.Error("排除 matplotlib.pyplot 应挡住它的更深子模块")
 	}
 	if excludedModule(ex, "numpy") {
 		t.Error("未排除的模块不应被挡")

@@ -20,7 +20,6 @@ import (
 // resourceGap 一个"没进包"的资源及其引用位置
 type resourceGap struct {
 	Ref  string   // 代码里的写法（相对路径，便于用户对照）
-	Disk string   // 磁盘上的完整路径
 	Srcs []string // 引用位置 "文件:行号"
 }
 
@@ -56,13 +55,13 @@ func unbundledResources(deps []config.ResourceDep) []resourceGap {
 	}
 
 	gaps := make([]resourceGap, 0, len(byPath))
-	for disk, a := range byPath {
+	for _, a := range byPath {
 		sort.Strings(a.srcs)
 		srcs := a.srcs
 		if len(srcs) > 3 {
 			srcs = append(srcs[:3:3], fmt.Sprintf("等 %d 处", len(a.srcs)))
 		}
-		gaps = append(gaps, resourceGap{Ref: a.ref, Disk: disk, Srcs: srcs})
+		gaps = append(gaps, resourceGap{Ref: a.ref, Srcs: srcs})
 	}
 	sort.Slice(gaps, func(i, j int) bool { return gaps[i].Ref < gaps[j].Ref })
 	return gaps

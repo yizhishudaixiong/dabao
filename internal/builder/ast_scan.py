@@ -160,7 +160,7 @@ def _has_res_ext(s):
         return False  # URL 不是随包分发的资源
     if s.startswith(':') or s.startswith('qrc:'):
         return False  # Qt 资源系统里的伪路径（:/icons/a.png），不是磁盘文件
-    if any(c in s for c in '*?[}'):
+    if any(c in s for c in '*?['):
         return False  # glob 模式描述一批文件，不是某个具体资源
     return os.path.splitext(s)[1].lower() in RES_EXTS
 
@@ -254,8 +254,6 @@ def scan_file(path, root):
                             'dynamic': True, 'kind': name, 'file_base': False,
                             'code': code_of(node)})
             continue
-
-        continue
     # 5. 任意位置的字符串字面量（赋值、字典/列表、函数参数与默认值……）。
     #
     # 为什么不再按"赋值"或"特定函数名"匹配：资源路径在真实代码里出现在任何地方——

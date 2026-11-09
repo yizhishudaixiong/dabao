@@ -101,15 +101,15 @@ func AnalyzeResourceDeps(pythonPath, entryScript string, resources []config.Reso
 			Line:       s.Line,
 			Code:       s.Code,
 		}
-		// 去重键必须带上原始引用（s.Ref）：同一行可能引用多个资源
-		// （如 os.path.join('a.txt', 'b.txt')），只用"文件+行号"会误删后面的引用
-		key := s.File + "|" + strconv.Itoa(s.Line) + "|" + s.Ref
-		if seen[key] {
-			continue
-		}
-
 		ref := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(s.Ref), "./"), `.\`)
 		if ref == "" {
+			continue
+		}
+		// 去重键带上引用本身：同一行可能引用多个资源
+		// （如 os.path.join('a.txt', 'b.txt')），只用"文件+行号"会误删后面的引用。
+		// 用归一化后的 ref，'./a.png' 与 'a.png' 才能合并成一条。
+		key := s.File + "|" + strconv.Itoa(s.Line) + "|" + ref
+		if seen[key] {
 			continue
 		}
 		d.Ref = ref

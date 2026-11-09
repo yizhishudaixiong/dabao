@@ -9,11 +9,46 @@ try:
 except Exception:
     pass
 
-def is_stdlib(name):
+def _stdlib_names():
+    """标准库模块名集合。
+
+    sys.stdlib_module_names 是 Python 3.10 才加的；3.8/3.9 上直接访问会抛
+    AttributeError，而后面 `stdlib = set(sys.stdlib_module_names)` 是裸调用，
+    会让整个分析崩掉。这里给一份等价退化：内置模块名 + 标准库目录下的顶层
+    模块/包名（老版本 CPython 布局足够用）。
+    """
     try:
-        return name in sys.stdlib_module_names
+        return set(sys.stdlib_module_names)
     except AttributeError:
-        return False
+        pass
+    names = set(sys.builtin_module_names)
+    try:
+        libdir = os.path.dirname(os.__file__)
+        # Windows 上 C 扩展（_bz2.pyd / select.pyd 等）在 Lib 旁边的 DLLs/ 里
+        roots = [libdir, os.path.join(os.path.dirname(libdir), 'DLLs')]
+    except Exception:
+        roots = []
+    for root in roots:
+        try:
+            entries = os.listdir(root)
+        except OSError:
+            continue
+        for fn in entries:
+            if fn.startswith('__'):
+                continue
+            stem, ext = os.path.splitext(fn)
+            if ext in ('.py', '.pyd', '.so'):
+                names.add(stem)
+            elif not ext and os.path.isdir(os.path.join(root, fn)):
+                names.add(fn)
+    return names
+
+
+STDLIB_NAMES = _stdlib_names()
+
+
+def is_stdlib(name):
+    return name in STDLIB_NAMES
 
 def read_source(path):
     """按源码自己声明的编码读取（PEP 263 / BOM）。
@@ -117,7 +152,7 @@ def env_signature():
     PyInstaller 的分析结果（Analysis-00.toc）只按"上次收集到的文件 mtime"判断能否复用，
     新装的包不在上次的清单里，不会让缓存失效。表现是：先分析报某包缺失 → 装上 →
     再分析仍拿着旧清单，analysisModules 里没有这个包，加密打包就不会收集它。
-    把指纹放进缓存目录名，环境一变就自动重新分析，环境不变仍然秒回。
+    指纹与上次不同就删掉 Analysis-00.toc 强制重新分析；完全没变仍然秒回。
     """
     parts = []
     for d in importlib.metadata.distributions():
@@ -265,6 +300,7 @@ def main(entry, workpath):
         except OSError:
             pass
 
+    t0 = time.time()  # 只统计分析引擎本身的耗时，不含上面的指纹计算
     a = Analysis([entry], pathex=[base_dir], binaries=[], datas=[],
                  hiddenimports=[], hookspath=[], runtime_hooks=[],
                  excludes=[], noarchive=False)
@@ -476,8 +512,8 @@ def main(entry, workpath):
         """模块名 -> pip 包名；无法确定时返回 None（它不是一个可安装的依赖）。
 
         判定顺序：
-          1. pipreqs 官方映射（cv2 -> opencv-python、win32api -> pywin32 等）
-          2. 已装发行版声明的顶层模块（packages_distributions）
+          1. 已装发行版声明的顶层模块（packages_distributions，最权威）
+          2. pipreqs 官方映射（cv2 -> opencv-python、win32api -> pywin32 等）
           3. 都查不到但模块确实能导入 → 它是某个包的内部模块/命名空间包/编译扩展
              （如 _yaml、win32ctypes），本身没有独立发行版。报成依赖只会让用户
              装进一个同名野包，必须排除。
@@ -520,7 +556,7 @@ def main(entry, workpath):
         return ''
 
     # ---------- 5. 差集判定 ----------
-    stdlib = set(sys.stdlib_module_names)
+    stdlib = STDLIB_NAMES
 
     def has_module(imp):
         """权威兜底：直接问当前 Python 的 import 机制"这个模块能否被定位"。
@@ -528,7 +564,10 @@ def main(entry, workpath):
         其他任何形式），只要环境里真实存在（可 import），就判已装。"""
         try:
             return importlib.util.find_spec(imp) is not None
-        except (ImportError, ValueError, AttributeError, ModuleNotFoundError):
+        except Exception:
+            # find_spec 会导入父包，父包 __init__ 里抛什么都有可能（配置缺失、
+            # 依赖没装、甚至 sys.exit）；这里只是"能不能找到"的探测，一律按找不到处理，
+            # 不能让一次探测把整个分析带崩
             return False
 
     def hit_mod(imp):
@@ -577,7 +616,9 @@ def main(entry, workpath):
             g = groups[gk]
             pkg = g["pkg"]
             mods = sorted(g["mods"])
-            dists = pkgs_map.get(mods[0], [])
+            # mods 里存的是代码里实际写的完整模块名（如 lxml.etree），
+            # 而 packages_distributions() 的键是顶层模块名，必须取第一段再查
+            dists = pkgs_map.get(mods[0].split('.')[0], [])
             # 来源去重排序，最多展示 4 处（超出以「等 N 处」省略）
             srcs = sorted(g["srcs"])
             src_txt = ', '.join(srcs[:4]) + (' 等 %d 处' % len(srcs) if len(srcs) > 4 else '')

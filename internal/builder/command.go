@@ -269,8 +269,12 @@ func BuildArgs(cfg *config.BuildConfig, workspace, entryScript string, extraData
 	return args, nil
 }
 
-// excludedModule 判断模块名是否被用户列入「排除模块」（大小写不敏感，
-// 同时比较完整名与顶层名：排除 pkg 应能挡住 pkg.sub）
+// excludedModule 判断模块名是否被用户列入「排除模块」（大小写不敏感）。
+//
+// 匹配方向很重要，只能"从上往下"：排除 pkg 应挡住 pkg.sub；
+// 但排除 pkg.sub 不能挡住 pkg —— PyInstaller 的 --exclude-module pkg.sub
+// 只移除那一个子模块，父包其余部分仍然要用。如果因为排除了一个子模块就跳过
+// 整个包的 hidden-import / collect-all，加密产物里整包都会缺。
 func excludedModule(excludes []string, mod string) bool {
 	mod = strings.ToLower(strings.TrimSpace(mod))
 	if mod == "" {
@@ -281,7 +285,7 @@ func excludedModule(excludes []string, mod string) bool {
 		if e == "" {
 			continue
 		}
-		if mod == e || strings.HasPrefix(mod, e+".") || strings.HasPrefix(e, mod+".") {
+		if mod == e || strings.HasPrefix(mod, e+".") {
 			return true
 		}
 	}

@@ -25,12 +25,6 @@ import (
 
 var warnLineRe = regexp.MustCompile(`^missing module named (\S+) - imported by (.+)$`)
 
-// missingModule 一条"产物缺少的模块"记录
-type missingModule struct {
-	Name      string   // 缺失的模块名（可能是 a.b 形式）
-	Importers []string // 引用它的用户代码（相对项目目录，或模块名）
-}
-
 // missingModulesReport 扫描工作区里的 warn-*.txt，返回面向用户的提示文本。
 // 没有命中（或没有 warn 文件）时返回空串，调用方直接跳过。
 func missingModulesReport(workspace string, cfg *config.BuildConfig) string {
