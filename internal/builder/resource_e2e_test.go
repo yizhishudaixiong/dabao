@@ -73,8 +73,13 @@ func TestResourcePackedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ws.Cleanup()
-	if err := ws.Run(cfg, func(string) {}, nil); err != nil {
+	var logs []string
+	if err := ws.Run(cfg, func(l string) { logs = append(logs, l) }, nil); err != nil {
 		t.Fatalf("打包失败: %v", err)
+	}
+	// 资源都勾选了，构建前的资源核对不应打扰用户
+	if strings.Contains(strings.Join(logs, "\n"), "[资源检查]") {
+		t.Errorf("资源已全部勾选时不应出现资源检查提示")
 	}
 	exe := filepath.Join(ws.Root, "dist", cfg.Name+".exe")
 	cmd := exec.Command(exe)

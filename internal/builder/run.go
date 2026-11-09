@@ -34,6 +34,16 @@ func NewWorkspace() (*Workspace, error) {
 // cancel 非 nil 时用于请求取消
 // 若配置了代码加密（basic/deep），会先用 PyArmor 加密整个用户项目，再打包加密后的产物
 func (w *Workspace) Run(cfg *config.BuildConfig, onLog func(string), cancel <-chan struct{}) error {
+	// 构建前核对资源：代码引用了、磁盘上也有、但没勾进打包清单的文件不会进产物，
+	// 程序跑到对应代码才报 FileNotFoundError。只提示不阻断（有些文件本就该从外部读取）。
+	// 放在加密/打包之前，用户还来得及取消去补勾选。
+	if onLog != nil {
+		if msg := checkUnbundledResources(cfg); msg != "" {
+			onLog(msg)
+			onLog("")
+		}
+	}
+
 	// 实际入口脚本：默认用用户脚本；启用加密时替换为 PyArmor 加密后的脚本
 	entry := cfg.EntryScript
 	var extraData []string
