@@ -378,7 +378,9 @@ export default function ModePage({
                           d.exists ? 'text-ink-faint' : 'text-warn'
                         }`}
                       >
-                        {d.exists ? d.diskPath : '（磁盘上未找到）'}
+                        {d.exists
+                          ? d.diskPath
+                          : '（磁盘上未找到。若该文件由程序运行时生成，可以忽略；若本该随包分发，请补到项目目录）'}
                       </p>
                     )}
                     {d.code && (

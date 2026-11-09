@@ -134,7 +134,9 @@ push 源码到码云
 - **依赖分析缓存靠「环境 + 源码」双指纹失效**。PyInstaller 的 `Analysis-00.toc` 只按已收集文件的 mtime 判断能否复用，两类变化它都看不见：新装的包不在旧清单里、`sys.path` 注入目录里的文件不在依赖图里。因此每次分析前算一个戳（已装包的 `名称==版本` 哈希 + 项目全部 `.py` 的 `路径:大小:mtime` 哈希），与上次不同就删掉 `Analysis-00.toc` 强制重新分析；完全没变仍然 0.9 秒命中。
 - **「本地依赖」按文件系统判定，不看 PyInstaller 收集结果**。`sys.path.append('lib')` 之后的 `import helpers`，PyInstaller 根本看不到（`lib` 不在 pathex 里），只看收集结果就会把 `helpers` 报成"缺失的 pip 包"，用户一装就装进同名野包。现在只要项目目录里存在同名 `.py` 就算本地模块。扫描范围同时扩到项目下**全部** `.py`（跳过 `tests/`、`docs/`、`examples/`、`setup.py`），否则注入目录里的真实依赖会整片漏掉。
 - **能导入但没有任何发行版声明提供的模块，不算依赖**。`_yaml`、`win32ctypes` 这类某个包的内部模块/编译扩展本身没有独立发行版，报成依赖只会让用户装到同名野包；反之"导入不了又查不到映射"才是真缺失，用模块名当包名作最佳猜测。`try: import x / except ImportError` 里的**可选依赖**缺失时程序自带降级，同样不报。
-- **资源分析对"候选"宽松、对"结论"严格**。候选阶段只要求参数是带资源扩展名的字符串（自定义封装 `resource_path('data/config.json')`、`QIcon('icon.png')` 才抓得到），结论阶段再用两条硬规则过滤：写入模式的 `open` 不算资源；既不在磁盘上、也没被勾选、又没有任何目录分隔符的裸名字（`parser.load('section')`、`NAME='settings.json'`）一律丢弃，而带目录的 `assets/missing.png` 会保留——那正是"引用了但文件不存在"的真实问题。
+- **模块名 → pip 包名：已装环境的映射优先于静态表**。`importlib.metadata.packages_distributions()` 是解释器自己给出的权威答案（还能对上 `opencv-contrib-python` 这类变体），静态表（pipreqs 0.5.0 + 手写补充）只在"模块尚未安装"时作为唯一线索。静态表里的过期映射（`MySQLdb → MySQL-python` 只支持 Python 2）因此会被自动绕过。
+- **资源分析对"候选"宽松、对"结论"严格**。候选阶段**扫描任意位置的字符串字面量**（赋值、字典/列表、函数参数与默认值都算）——`QIcon('icon.png')`、`resource_path('data/config.json')`、`MENU=[{'icon':'a.png'}]` 这类写法函数名不可枚举、位置也不固定，按白名单必然漏。排除三类噪音后交给结论阶段：文档字符串、f-string 片段（`f'{BASE}/a.png'` 的常量段单独解析会得到错路径）、带空格的提示文案。结论阶段的硬规则：写入模式的 `open` 不算资源；Qt 的 `:/icons/a.png` 与 URL、glob 不是磁盘资源；既不在磁盘上、没被勾选、又没有任何目录分隔符的裸名字丢弃；带目录的 `assets/missing.png` 保留（"引用了但文件不存在"是真实问题）。
+- **资源结果按"该不该处理"排序**：未包含且文件存在 → 未包含且不存在 → 已包含。界面按这个顺序展示，最该看的在最上面。
 - **打包命令行有长度上限**（Windows `CreateProcess` 32767 字符）。装了几百个包时 `--copy-metadata` + `--collect-all` + `--hidden-import` 很容易逼近上限，超了只会得到一句 `filename or extension is too long`。`fitCmdline` 在超长时优先丢弃 `--copy-metadata`（最不影响产物），仍超长则给出中文报错，绝不擅自删 hidden-import。
 - **UPX 会提高杀软误报率**，默认关闭。
 - **便携版下载没有校验和**（上游未提供 SHA256），只做总长度校验；下载走第三方 GitHub 代理，属于已知信任边界。

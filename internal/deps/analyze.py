@@ -67,6 +67,28 @@ def iter_project_py(root):
                 yield os.path.join(dirpath, fn)
 
 
+def dir_has_py(root, max_entries=300):
+    """目录里是否有 Python 文件（最多看 max_entries 个文件就下结论）。
+
+    只用于判断顶层目录是不是命名空间包；对 assets/ 这类只有图片的大目录，
+    走完整棵树纯属浪费，所以给了上限（超限按"没有"处理，不影响主流程）。
+    """
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            d for d in dirnames
+            if d.lower() not in SKIP_SCAN_DIRS
+            and not os.path.isfile(os.path.join(dirpath, d, 'pyvenv.cfg'))
+        ]
+        for fn in filenames:
+            if fn.lower().endswith('.py') and fn.lower() not in SKIP_SCAN_FILES:
+                return True
+            seen += 1
+            if seen > max_entries:
+                return False
+    return False
+
+
 def source_signature(root):
     """项目源码指纹：所有 .py 的 相对路径 + 大小 + 修改时间。
 
@@ -282,6 +304,18 @@ def main(entry, workpath):
         stem = os.path.splitext(os.path.basename(p))[0]
         if stem != '__init__':
             local_names.add(stem)
+    # 顶层目录里的"命名空间包"（PEP 420，没有 __init__.py 但有 .py）：
+    # import ns.thing 里的 ns 同样是本地代码，不能报成缺失的 pip 包。
+    try:
+        for entry in os.scandir(base_dir):
+            if not entry.is_dir():
+                continue
+            if entry.name.lower() in SKIP_SCAN_DIRS:
+                continue
+            if dir_has_py(entry.path):
+                local_names.add(entry.name)
+    except OSError:
+        pass
 
     def is_local_mod(mod):
         # ① PyInstaller 收集到的、位于项目目录内的模块（最权威）
@@ -438,15 +472,21 @@ def main(entry, workpath):
              装进一个同名野包，必须排除。
           4. 都查不到且模块确实导入不了 → 真缺失，用模块名当包名作最佳猜测。
         """
-        pkg = MODULE_TO_PKG.get(mod.lower())
-        if pkg:
-            return pkg
+        # ① 已装发行版声明的映射最权威：静态表会过期（pipreqs 把 MySQLdb 映射成
+        #    只支持 Python 2 的 MySQL-python），而"环境里到底是哪个发行版提供了这个
+        #    模块"是解释器自己说的，不会错。opencv-contrib-python 这类变体也能对上。
         dists = pkgs_map.get(mod) or []
         if dists:
             # 发行版名转小写，统一成 pip 可识别的规范名（如 "Requests" -> "requests"）
             return dists[0].lower()
+        # ② 静态映射表（未安装时唯一可用的线索）
+        pkg = MODULE_TO_PKG.get(mod.lower())
+        if pkg:
+            return pkg
+        # ③ 能导入但没有发行版声明 → 内部模块/命名空间包/编译扩展，不是依赖
         if importable:
             return None
+        # ④ 真缺失：用模块名当包名作最佳猜测
         return mod
 
     def req_version(dists, pkg):

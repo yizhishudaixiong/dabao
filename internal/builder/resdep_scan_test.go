@@ -122,6 +122,7 @@ func TestResourceDepsAccuracy(t *testing.T) {
 	write("main.py", ""+
 		"import logging\n"+
 		"from pathlib import Path\n"+
+		"\"\"\"模块说明：图标放在 assets/logo.png，配置是 data/config.json\"\"\"\n"+
 		"logging.info('report.csv')\n"+
 		"parser.load('section')\n"+
 		"db.copy('users')\n"+
@@ -132,7 +133,12 @@ func TestResourceDepsAccuracy(t *testing.T) {
 		"QIcon('style.qss')\n"+
 		"open('index.html')\n"+
 		"open('assets/missing.png')\n"+
-		"glob.glob('assets/*.png')\n")
+		"glob.glob('assets/*.png')\n"+
+		"# 下面三种是位置不固定的写法：字典字面量、关键字参数、f-string\n"+
+		"MENU = [{'icon': 'assets/icon.png'}]\n"+
+		"parser.add_argument('--cfg', default='data/config.json')\n"+
+		"open(f'{BASE}/assets/logo.png')\n"+
+		"QIcon(':/icons/a.png')\n")
 
 	deps, err := AnalyzeResourceDeps(py, filepath.Join(dir, "main.py"), []config.ResourceItem{})
 	if err != nil {
@@ -142,12 +148,12 @@ func TestResourceDepsAccuracy(t *testing.T) {
 	for _, d := range deps {
 		got[d.Ref] = true
 	}
-	for _, want := range []string{"assets/logo.png", "data/config.json", "style.qss", "index.html", "assets/missing.png"} {
+	for _, want := range []string{"assets/logo.png", "data/config.json", "assets/icon.png", "style.qss", "index.html", "assets/missing.png"} {
 		if !got[want] {
 			t.Errorf("漏报资源 %q", want)
 		}
 	}
-	for _, bad := range []string{"out.txt", "report.csv", "section", "users", "https://cdn.example.com/logo.png", "assets/*.png"} {
+	for _, bad := range []string{"out.txt", "report.csv", "section", "users", "https://cdn.example.com/logo.png", "assets/*.png", ":/icons/a.png"} {
 		if got[bad] {
 			t.Errorf("误报 %q：不是随包分发的资源", bad)
 		}

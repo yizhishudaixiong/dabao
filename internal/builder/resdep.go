@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -172,6 +173,26 @@ func AnalyzeResourceDeps(pythonPath, entryScript string, resources []config.Reso
 		seen[key] = true
 		deps = append(deps, d)
 	}
+	// 按"是否需要处理"排序，把最该看的放前面：
+	//   ① 未包含但文件存在（勾上就能打包）
+	//   ② 未包含且文件不存在（要么是运行时生成的文件，要么真的忘了放）
+	//   ③ 已包含
+	sort.SliceStable(deps, func(i, j int) bool {
+		rank := func(d config.ResourceDep) int {
+			if d.Included {
+				return 2
+			}
+			if d.Exists {
+				return 0
+			}
+			return 1
+		}
+		if ri, rj := rank(deps[i]), rank(deps[j]); ri != rj {
+			return ri < rj
+		}
+		return false
+	})
+
 	// 空结果返回空切片而非 nil：nil 经 Wails 序列化成 JSON null，
 	// 前端直接读 list.length 会崩溃（Cannot read properties of null）
 	if deps == nil {

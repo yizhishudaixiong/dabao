@@ -158,6 +158,8 @@ def _has_res_ext(s):
         return False
     if '://' in s:
         return False  # URL 不是随包分发的资源
+    if s.startswith(':') or s.startswith('qrc:'):
+        return False  # Qt 资源系统里的伪路径（:/icons/a.png），不是磁盘文件
     if any(c in s for c in '*?[}'):
         return False  # glob 模式描述一批文件，不是某个具体资源
     return os.path.splitext(s)[1].lower() in RES_EXTS
@@ -253,28 +255,66 @@ def scan_file(path, root):
                             'code': code_of(node)})
             continue
 
-        # 5. 任意其他调用：QIcon('assets/icon.png')、resource_path('data/config.json')、
-        #    load_ui('main.ui') 这类自定义封装——函数名不可枚举，只能看参数长得像不像路径。
-        #    这里放宽召回，最终由 Go 侧按"文件是否真实存在"过滤（不存在的裸名字一律丢弃），
-        #    否则 logging.info('report.csv') 这种会被当成资源报出来。
-        arg = node.args[0] if node.args else None
-        if isinstance(arg, ast.Constant) and isinstance(arg.value, str) \
-                and _has_res_ext(arg.value):
-            out.append({'ref': arg.value, 'file': rel, 'line': line,
-                        'dynamic': False, 'kind': 'call', 'file_base': False,
-                        'code': code_of(node)})
         continue
-    # 5. 字符串常量赋值（如 图标文件名 = 'logo.png'）：变量可能后续用于读取。
-    #    仅当值以常见资源扩展名结尾才提取，避免普通文本误报。
+    # 5. 任意位置的字符串字面量（赋值、字典/列表、函数参数与默认值……）。
+    #
+    # 为什么不再按"赋值"或"特定函数名"匹配：资源路径在真实代码里出现在任何地方——
+    #   QIcon('assets/icon.png')、resource_path('data/config.json')、
+    #   MENU = [{'icon': 'a.png'}]、add_argument(default='cfg.json')
+    # 函数名不可枚举、位置也不固定，白名单注定漏。这里只按"带资源扩展名"从宽收候选，
+    # 精度交给 Go 侧：文件不存在、没勾选、又不带目录的裸名字会被丢掉。
+    #
+    # 两类噪音要提前排除：文档字符串（说明文字里常出现文件名）和 f-string 的片段
+    # （f'{BASE}/assets/a.png' 的常量段只有 "/assets/a.png"，单独解析会得到错误路径）。
+    docstring_ids = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = getattr(n, 'body', None)
+            if body and isinstance(body[0], ast.Expr) \
+                    and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                docstring_ids.add(id(body[0].value))
+    fstring_ids = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.JoinedStr):
+            for v in n.values:
+                if isinstance(v, ast.Constant):
+                    fstring_ids.add(id(v))
+
+    # 父节点索引：用来判断某个字面量是不是已经被上面的结构化分支处理过
+    # （os.path.join 的片段、pathlib 的 / 片段、open/read_* 的参数），
+    # 否则 'logo.png' 会作为 'assets/logo.png' 的碎片再报一条，界面出现重复项。
+    parents = {}
+    for n in ast.walk(tree):
+        for child in ast.iter_child_nodes(n):
+            parents[id(child)] = n
+
+    def handled_structurally(node):
+        p = parents.get(id(node))
+        if isinstance(p, ast.BinOp) and isinstance(p.op, ast.Div):
+            return True
+        if isinstance(p, ast.Call):
+            name = _name_of(p.func)
+            if name in ('join', 'Path') or name in READ_CALLS or name in DLL_CALLS:
+                return True
+        return False
+
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) \
-                and isinstance(node.value.value, str):
-            val = node.value.value
-            if _has_res_ext(val):
-                out.append({'ref': val, 'file': rel,
-                            'line': getattr(node, 'lineno', 0),
-                            'dynamic': False, 'kind': 'assign', 'file_base': False,
-                            'code': code_of(node)})
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if id(node) in docstring_ids or id(node) in fstring_ids:
+            continue
+        if handled_structurally(node):
+            continue
+        val = node.value
+        if not _has_res_ext(val):
+            continue
+        if any(ch.isspace() for ch in val):
+            continue  # 带空格的几乎都是提示文案，不是路径
+        out.append({'ref': val, 'file': rel,
+                    'line': getattr(node, 'lineno', 0),
+                    'dynamic': False, 'kind': 'literal', 'file_base': False,
+                    'code': code_of(node)})
     return out
 
 

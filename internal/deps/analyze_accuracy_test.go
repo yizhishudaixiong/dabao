@@ -49,6 +49,7 @@ func TestAnalyzeClassifiesLocalAndThirdParty(t *testing.T) {
 	write("lib/helpers.py", "import zzz_lib_dep\nNAME = 'helper'\n") // 注入目录里的依赖——必须报
 	write("app/__init__.py", "")
 	write("app/window.py", "TITLE = 'win'\n")
+	write("ns/thing.py", "VALUE = 1\n")                // 顶层命名空间包（没有 __init__.py）
 	write("tests/test_x.py", "import zzz_test_only\n") // 测试目录——不能报
 	write("docs/conf.py", "import zzz_docs_only\n")    // 文档目录——不能报
 
@@ -79,7 +80,7 @@ func TestAnalyzeClassifiesLocalAndThirdParty(t *testing.T) {
 		}
 	}
 	// fitz 只是模块名，PyPI 上并不存在可用的 fitz 包，必须映射成 PyMuPDF
-	mustNotHave := []string{"helpers", "app", "zzz_test_only", "zzz_docs_only",
+	mustNotHave := []string{"helpers", "app", "ns", "zzz_test_only", "zzz_docs_only",
 		"zzz_optional_pkg", "fitz"}
 	for _, p := range mustNotHave {
 		if seen[p] {
